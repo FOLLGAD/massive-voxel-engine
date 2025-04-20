@@ -190,6 +190,38 @@ async function main() {
 
   setInterval(() => physicsStep(1000 / PHYSICS_FPS), 1000 / PHYSICS_FPS); // 30 fps physics
 
+  const unloadChunks = () => {
+    const playerChunkX = Math.floor(playerState.position[0] / CHUNK_SIZE_X);
+    const playerChunkY = Math.floor(playerState.position[1] / CHUNK_SIZE_Y);
+    const playerChunkZ = Math.floor(playerState.position[2] / CHUNK_SIZE_Z);
+
+    for (const [key, chunkMesh] of chunkMeshes.entries()) {
+      const { x, y, z } = chunkMesh.position;
+      const dx = Math.abs(x - playerChunkX);
+      const dy = Math.abs(y - playerChunkY);
+      const dz = Math.abs(z - playerChunkZ);
+      if (
+        dx > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ ||
+        dy > LOAD_RADIUS_Y + UNLOAD_BUFFER_Y ||
+        dz > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ
+      ) {
+        log("Main", `Unloading chunk: ${key}`);
+        chunkMeshes.delete(key);
+        requestedChunkKeys.delete(key);
+      }
+    }
+
+    setTimeout(
+      () =>
+        requestIdleCallback(unloadChunks, {
+          timeout: 2500,
+        }),
+      5000
+    );
+  };
+
+  unloadChunks();
+
   // --- Game Loop Function ---
   let lastTotalTriangles = 0;
   function frame() {
@@ -211,32 +243,10 @@ async function main() {
     rendererState.depthTexture = renderResult.updatedDepthTexture;
     lastTotalTriangles = renderResult.totalTriangles;
 
-    // --- Chunk Management ---
     const playerChunkX = Math.floor(playerState.position[0] / CHUNK_SIZE_X);
     const playerChunkY = Math.floor(playerState.position[1] / CHUNK_SIZE_Y);
     const playerChunkZ = Math.floor(playerState.position[2] / CHUNK_SIZE_Z);
 
-    // Unloading
-    for (const [key, chunkMesh] of chunkMeshes.entries()) {
-      const { x, y, z } = chunkMesh.position;
-      const dx = Math.abs(x - playerChunkX);
-      const dy = Math.abs(y - playerChunkY);
-      const dz = Math.abs(z - playerChunkZ);
-      if (
-        dx > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ ||
-        dy > LOAD_RADIUS_Y + UNLOAD_BUFFER_Y ||
-        dz > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ
-      ) {
-        log("Main", `Unloading chunk: ${key}`);
-        chunkMesh.vertexBuffer.destroy();
-        chunkMesh.indexBuffer.destroy();
-        chunkMeshes.delete(key);
-        requestedChunkKeys.delete(key);
-        loadedChunkData.delete(key);
-      }
-    }
-
-    // Loading
     for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
       for (
         let zOffset = -LOAD_RADIUS_XZ;
@@ -272,8 +282,10 @@ async function main() {
 
     // --- Update Debug Info ---
     if (debugInfoElement) {
-      frameTimes.push(deltaTime);
-      if (frameTimes.length > maxFrameSamples) frameTimes.shift();
+      if (frameTimes.length >= maxFrameSamples) {
+        frameTimes.length = maxFrameSamples - 1;
+      }
+      frameTimes.unshift(deltaTime);
       const avgDelta =
         frameTimes.length > 0
           ? frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length
@@ -306,16 +318,13 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
     }
 
     requestAnimationFrame(frame);
-  } // End frame loop
+  }
 
-  // --- Start the Loop ---
   requestAnimationFrame(frame);
 
-  // Handle window resizing
   window.addEventListener("resize", () => {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    // Depth texture is recreated automatically in renderFrame if needed
   });
 }
 

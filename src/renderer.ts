@@ -9,12 +9,9 @@ export interface RendererState {
   context: GPUCanvasContext;
   presentationFormat: GPUTextureFormat;
   voxelPipeline: GPURenderPipeline;
-  hitboxPipeline: GPURenderPipeline;
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   depthTexture: GPUTexture;
-  hitboxVertexBuffer: GPUBuffer; // Keep hitbox buffer here
-  hitboxVertexCount: number;
 }
 
 // --- Shaders ---
@@ -161,9 +158,6 @@ export async function initializeRenderer(
   const voxelShaderModule = device.createShaderModule({
     code: voxelShaderCode,
   });
-  const hitboxShaderModule = device.createShaderModule({
-    code: hitboxShaderCode,
-  });
 
   // Layouts
   const voxelVertexBufferLayout: GPUVertexBufferLayout = {
@@ -181,10 +175,6 @@ export async function initializeRenderer(
         format: "float32x3",
       }, // Normal
     ],
-  };
-  const hitboxVertexBufferLayout: GPUVertexBufferLayout = {
-    arrayStride: 3 * Float32Array.BYTES_PER_ELEMENT, // 3 position
-    attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }], // Position only
   };
 
   // Uniform Buffer & Bind Group
@@ -232,124 +222,18 @@ export async function initializeRenderer(
       format: "depth24plus",
     },
   });
-  const hitboxPipeline = device.createRenderPipeline({
-    label: "Hitbox Render Pipeline",
-    layout: pipelineLayout,
-    vertex: {
-      module: hitboxShaderModule,
-      entryPoint: "vs_main",
-      buffers: [hitboxVertexBufferLayout],
-    },
-    fragment: {
-      module: hitboxShaderModule,
-      entryPoint: "fs_main",
-      targets: [{ format: presentationFormat }],
-    },
-    primitive: { topology: "line-list" },
-    depthStencil: {
-      depthWriteEnabled: true,
-      depthCompare: "less",
-      format: "depth24plus",
-    },
-  });
 
   // Depth Texture
   const depthTexture = configureDepthTexture(device, canvas, null);
-
-  // Hitbox Geometry Buffer
-  const hitboxVertices = new Float32Array([
-    -PLAYER_WIDTH / 2,
-    0,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    0,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    0,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    0,
-    PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    0,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    0,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    0,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    0,
-    -PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    -PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    0,
-    -PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    0,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    -PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    0,
-    PLAYER_WIDTH / 2,
-    PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    0,
-    PLAYER_WIDTH / 2,
-    -PLAYER_WIDTH / 2,
-    PLAYER_HEIGHT,
-    PLAYER_WIDTH / 2,
-  ]);
-  const hitboxVertexBuffer = device.createBuffer({
-    label: "Hitbox Vertex Buffer",
-    size: hitboxVertices.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  });
-  //   device.queue.writeBuffer(hitboxVertexBuffer, 0, hitboxVertices);
-  const hitboxVertexCount = hitboxVertices.length / 3;
 
   return {
     device,
     context,
     presentationFormat,
     voxelPipeline,
-    hitboxPipeline,
     uniformBuffer,
     bindGroup,
     depthTexture,
-    hitboxVertexBuffer,
-    hitboxVertexCount,
   };
 }
 
@@ -365,16 +249,8 @@ export function renderFrame(
   updatedDepthTexture: GPUTexture;
   totalTriangles: number;
 } {
-  const {
-    device,
-    context,
-    voxelPipeline,
-    hitboxPipeline,
-    uniformBuffer,
-    bindGroup,
-    hitboxVertexBuffer,
-    hitboxVertexCount,
-  } = rendererState;
+  const { device, context, voxelPipeline, uniformBuffer, bindGroup } =
+    rendererState;
   let { depthTexture } = rendererState;
 
   // Ensure depth texture is correctly sized
@@ -423,19 +299,6 @@ export function renderFrame(
     totalTriangles += mesh.indexCount / 3;
   }
 
-  // --- Draw Hitbox ---
-  //   const hitboxModelMatrix = mat4.create();
-  //   mat4.translate(hitboxModelMatrix, hitboxModelMatrix, playerPosition); // Position hitbox at player's feet
-  //   const hitboxMvpMatrix = mat4.create();
-  //   mat4.multiply(hitboxMvpMatrix, vpMatrix, hitboxModelMatrix); // MVP = VP * M
-  //   device.queue.writeBuffer(uniformBuffer, 0, hitboxMvpMatrix as Float32Array); // Update uniform buffer
-
-  passEncoder.setPipeline(hitboxPipeline);
-  passEncoder.setBindGroup(0, bindGroup); // Reuses same bind group
-  passEncoder.setVertexBuffer(0, hitboxVertexBuffer);
-  passEncoder.draw(hitboxVertexCount);
-
-  // --- Finish Render Pass ---
   passEncoder.end();
   device.queue.submit([commandEncoder.finish()]);
 
