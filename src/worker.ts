@@ -11,6 +11,85 @@ import { ENABLE_GREEDY_MESHING } from "./config";
 
 console.log("Worker script loaded.");
 
+// --- Perlin Noise Implementation ---
+// (Based on various sources, simplified for 2D)
+class PerlinNoise {
+  private p: number[] = []; // Permutation table
+
+  constructor(seed: number = Math.random()) {
+    const random = this.seedableRandom(seed);
+    this.p = Array.from({ length: 256 }, (_, i) => i);
+    // Shuffle p
+    for (let i = this.p.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [this.p[i], this.p[j]] = [this.p[j], this.p[i]];
+    }
+    // Duplicate p to avoid overflow
+    this.p = this.p.concat(this.p);
+  }
+
+  // Simple seedable pseudo-random number generator
+  private seedableRandom(seed: number) {
+    let state = seed;
+    return () => {
+      // Simple LCG (Linear Congruential Generator) parameters
+      state = (state * 1103515245 + 12345) % 2147483647;
+      return state / 2147483647;
+    };
+  }
+
+  private fade(t: number): number {
+    return t * t * t * (t * (t * 6 - 15) + 10);
+  }
+
+  private lerp(t: number, a: number, b: number): number {
+    return a + t * (b - a);
+  }
+
+  private grad(hash: number, x: number, y: number): number {
+    const h = hash & 15; // Use lower 4 bits for gradient direction
+    const u = h < 8 ? x : y;
+    const v = h < 4 ? y : h === 12 || h === 14 ? x : 0;
+    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+  }
+
+  noise(x: number, y: number): number {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+
+    // biome-ignore lint/style/noParameterAssign: <explanation>
+    x -= Math.floor(x);
+    // biome-ignore lint/style/noParameterAssign: <explanation>
+    y -= Math.floor(y);
+
+    const u = this.fade(x);
+    const v = this.fade(y);
+
+    const p = this.p;
+    const A = p[X] + Y;
+    const B = p[X + 1] + Y;
+
+    const hashAA = p[p[A]];
+    const hashAB = p[p[A + 1]];
+    const hashBA = p[p[B]];
+    const hashBB = p[p[B + 1]];
+
+    const gradAA = this.grad(hashAA, x, y);
+    const gradAB = this.grad(hashAB, x, y - 1);
+    const gradBA = this.grad(hashBA, x - 1, y);
+    const gradBB = this.grad(hashBB, x - 1, y - 1);
+
+    const lerpX1 = this.lerp(u, gradBA, gradAA);
+    const lerpX2 = this.lerp(u, gradBB, gradAB);
+    const result = this.lerp(v, lerpX2, lerpX1);
+
+    // Return value in range [-1, 1] (approximately)
+    return result;
+  }
+}
+
+// --- End Perlin Noise ---
+
 // Pre-defined vertex data for each face of a cube (centered at 0,0,0) - Needed for Naive Meshing
 // Order: position (3 floats)
 const CUBE_FACES = {
@@ -97,20 +176,22 @@ class Chunk {
   }
 
   generateTerrain(): void {
-    const baseHeight = CHUNK_SIZE_Y / 2; // Average height level
-    const amplitude1 = 10; // Amplitude of the first sine wave
-    const frequency1 = 0.03; // Frequency (scale) of the first sine wave
-    const amplitude2 = 5; // Amplitude of the second sine wave
-    const frequency2 = 0.08; // Frequency of the second sine wave
-    const stoneDepth = 5; // How deep stone layer goes below dirt/grass
+    // --- Terrain Generation Parameters ---
+    const noiseGen = new PerlinNoise(12345); // Use a fixed seed for consistency
+    const baseHeight = Math.floor(CHUNK_SIZE_Y * 0.4); // Lower average height
+    const terrainScale = 0.01; // Lower frequency = larger features
+    const numOctaves = 5; // More layers = more detail
+    const persistence = 0.5; // Amplitude reduction per octave
+    const lacunarity = 2.0; // Frequency increase per octave
+    const overallAmplitude = CHUNK_SIZE_Y * 0.4; // Max height variation
+    const stoneDepth = 6; // How deep stone layer goes below dirt/grass
 
     // Calculate world offset for noise input
     const worldOffsetX = this.position.x * CHUNK_SIZE_X;
     const worldOffsetZ = this.position.z * CHUNK_SIZE_Z;
-    // Note: We don't use worldOffsetY for height calculation, terrain height is independent of chunk Y position
 
     console.log(
-      `Generating procedural terrain for chunk at ${this.position.x},${this.position.y},${this.position.z}`
+      `Generating Perlin terrain for chunk at ${this.position.x},${this.position.y},${this.position.z}`
     );
 
     for (let x = 0; x < CHUNK_SIZE_X; x++) {
@@ -119,10 +200,25 @@ class Chunk {
         const worldX = worldOffsetX + x;
         const worldZ = worldOffsetZ + z;
 
-        // Calculate height using combined sine waves
-        const height1 = Math.sin(worldX * frequency1) * amplitude1;
-        const height2 = Math.sin(worldZ * frequency2) * amplitude2;
-        const height = Math.floor(baseHeight + height1 + height2);
+        // --- Calculate height using multi-octave Perlin noise ---
+        let totalNoise = 0;
+        let frequency = terrainScale;
+        let amplitude = 1.0;
+        let maxAmplitude = 0; // Used for normalization
+
+        for (let i = 0; i < numOctaves; i++) {
+          totalNoise +=
+            noiseGen.noise(worldX * frequency, worldZ * frequency) * amplitude;
+          maxAmplitude += amplitude;
+          amplitude *= persistence;
+          frequency *= lacunarity;
+        }
+
+        // Normalize noise to be roughly between -1 and 1, then scale
+        const normalizedNoise = totalNoise / maxAmplitude;
+        const heightVariation = normalizedNoise * overallAmplitude;
+        const height = Math.floor(baseHeight + heightVariation);
+        // --- End Height Calculation ---
 
         // Calculate the Y coordinate relative to the chunk's base
         const chunkBaseY = this.position.y * CHUNK_SIZE_Y;
@@ -133,8 +229,12 @@ class Chunk {
           if (worldY > height) {
             this.setVoxel(x, y, z, VoxelType.AIR);
           } else if (worldY === height) {
-            // Top layer is Grass, unless underwater (optional, add later)
-            this.setVoxel(x, y, z, VoxelType.GRASS);
+            // Make tops slightly higher than water level grass, lower stone
+            if (worldY >= baseHeight - 2) {
+              this.setVoxel(x, y, z, VoxelType.GRASS);
+            } else {
+              this.setVoxel(x, y, z, VoxelType.STONE); // Mountain peaks are stone
+            }
           } else if (worldY > height - stoneDepth) {
             // Layer below grass is Dirt
             this.setVoxel(x, y, z, VoxelType.DIRT);
@@ -146,8 +246,19 @@ class Chunk {
       }
     }
     console.log(
-      `Terrain generation complete for chunk ${this.position.x},${this.position.y},${this.position.z}`
+      `Perlin terrain generation complete for chunk ${this.position.x},${this.position.y},${this.position.z}`
     );
+
+    // Add a 10% chance to spawn a floating stone block (Keep this?)
+    if (Math.random() < 0.1) {
+      const stoneX = Math.floor(Math.random() * CHUNK_SIZE_X);
+      const stoneY = Math.floor(Math.random() * CHUNK_SIZE_Y);
+      const stoneZ = Math.floor(Math.random() * CHUNK_SIZE_Z);
+      this.setVoxel(stoneX, stoneY, stoneZ, VoxelType.STONE);
+      console.log(
+        `[Debug] Added random stone block at ${stoneX},${stoneY},${stoneZ} in chunk ${this.position.x},${this.position.y},${this.position.z}`
+      );
+    }
   }
 
   // --- Naive Meshing Implementation (with color and normals) ---
@@ -245,15 +356,15 @@ class Chunk {
     const offsetZ = this.position.z * CHUNK_SIZE_Z;
 
     // Sweep over the 3 dimensions (X, Y, Z)
-    for (let d = 0; d < 3; d++) {
-      const u = (d + 1) % 3; // Dimension 1 of the slice plane
-      const v = (d + 2) % 3; // Dimension 2 of the slice plane
+    for (let dimension = 0; dimension < 3; dimension++) {
+      const u = (dimension + 1) % 3; // Dimension 1 of the slice plane
+      const v = (dimension + 2) % 3; // Dimension 2 of the slice plane
 
       const x: number[] = [0, 0, 0]; // Current voxel position during sweep
       const mask = new Int8Array(dims[u] * dims[v]); // 2D mask for the slice plane
 
       // Sweep through slices along dimension 'd'
-      for (x[d] = 0; x[d] < dims[d]; ++x[d]) {
+      for (x[dimension] = -1; x[dimension] < dims[dimension]; ++x[dimension]) {
         let maskIndex = 0;
 
         // Generate mask for the current slice plane (u, v)
@@ -261,7 +372,7 @@ class Chunk {
           for (x[u] = 0; x[u] < dims[u]; ++x[u]) {
             const type1 = this.getVoxel(x[0], x[1], x[2]);
             const x_neighbor = [...x];
-            x_neighbor[d]++;
+            x_neighbor[dimension]++;
             const type2 = this.getVoxel(
               x_neighbor[0],
               x_neighbor[1],
@@ -292,7 +403,7 @@ class Chunk {
 
               // Determine normal based on dimension 'd' and face direction
               const normal: [number, number, number] = [0, 0, 0];
-              normal[d] = isPositiveFace ? 1 : -1;
+              normal[dimension] = isPositiveFace ? 1 : -1;
 
               // Calculate width (w) along u dimension
               let w = 1;
@@ -321,39 +432,78 @@ class Chunk {
               du[u] = w;
               const dv = [0, 0, 0];
               dv[v] = h;
-              const vertexPosPlane = x[d] + 1;
+              const vertexPosPlane = x[dimension] + 1; // Corrected position
 
               // Calculate LOCAL chunk coordinates first
               const v0_local = [...x];
-              v0_local[d] = vertexPosPlane; // Corner 0 (i, j)
+              v0_local[dimension] = vertexPosPlane; // Corner 0 (i, j)
               const v1_local = [x[0] + du[0], x[1] + du[1], x[2] + du[2]];
-              v1_local[d] = vertexPosPlane; // Corner 1 (i+w, j)
+              v1_local[dimension] = vertexPosPlane; // Corner 1 (i+w, j)
               const v2_local = [
                 x[0] + du[0] + dv[0],
                 x[1] + du[1] + dv[1],
                 x[2] + du[2] + dv[2],
               ];
-              v2_local[d] = vertexPosPlane; // Corner 2 (i+w, j+h)
+              v2_local[dimension] = vertexPosPlane; // Corner 2 (i+w, j+h)
               const v3_local = [x[0] + dv[0], x[1] + dv[1], x[2] + dv[2]];
-              v3_local[d] = vertexPosPlane; // Corner 3 (i, j+h)
+              v3_local[dimension] = vertexPosPlane; // Corner 3 (i, j+h)
 
               // Add vertices to the buffer [world_x, world_y, world_z, r, g, b, nx, ny, nz]
               // Apply the world offset here
-              vertices.push(v0_local[0] + offsetX, v0_local[1] + offsetY, v0_local[2] + offsetZ, ...color, ...normal);
-              vertices.push(v1_local[0] + offsetX, v1_local[1] + offsetY, v1_local[2] + offsetZ, ...color, ...normal);
-              vertices.push(v2_local[0] + offsetX, v2_local[1] + offsetY, v2_local[2] + offsetZ, ...color, ...normal);
-              vertices.push(v3_local[0] + offsetX, v3_local[1] + offsetY, v3_local[2] + offsetZ, ...color, ...normal);
-
-              // Add indices using standard CCW order relative to the quad vertices v0, v1, v2, v3
-              // The GPU's backface culling combined with the view matrix should handle visibility.
-              indices.push(
-                  baseVertexIndexOffset + 0, baseVertexIndexOffset + 1, baseVertexIndexOffset + 2, // Tri 1: v0-v1-v2
-                  baseVertexIndexOffset + 0, baseVertexIndexOffset + 2, baseVertexIndexOffset + 3  // Tri 2: v0-v2-v3
+              vertices.push(
+                v0_local[0] + offsetX,
+                v0_local[1] + offsetY,
+                v0_local[2] + offsetZ,
+                ...color,
+                ...normal
+              );
+              vertices.push(
+                v1_local[0] + offsetX,
+                v1_local[1] + offsetY,
+                v1_local[2] + offsetZ,
+                ...color,
+                ...normal
+              );
+              vertices.push(
+                v2_local[0] + offsetX,
+                v2_local[1] + offsetY,
+                v2_local[2] + offsetZ,
+                ...color,
+                ...normal
+              );
+              vertices.push(
+                v3_local[0] + offsetX,
+                v3_local[1] + offsetY,
+                v3_local[2] + offsetZ,
+                ...color,
+                ...normal
               );
 
+              // Add indices. Check if winding order needs reversal.
+              if (!isPositiveFace) {
+                // Reversed winding order: (0,2,1), (0,3,2)
+                indices.push(
+                  baseVertexIndexOffset + 0,
+                  baseVertexIndexOffset + 2,
+                  baseVertexIndexOffset + 1,
+                  baseVertexIndexOffset + 0,
+                  baseVertexIndexOffset + 3,
+                  baseVertexIndexOffset + 2
+                );
+              } else {
+                // Standard CCW winding order: (0,1,2), (0,2,3)
+                indices.push(
+                  baseVertexIndexOffset + 0,
+                  baseVertexIndexOffset + 1,
+                  baseVertexIndexOffset + 2,
+                  baseVertexIndexOffset + 0,
+                  baseVertexIndexOffset + 2,
+                  baseVertexIndexOffset + 3
+                );
+              }
               baseVertexIndexOffset += 4;
 
-              // Zero out maskst
+              // Zero out mask
               for (let l = 0; l < h; ++l) {
                 for (let k = 0; k < w; ++k) {
                   mask[maskIndex + k + l * dims[u]] = 0;

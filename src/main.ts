@@ -108,6 +108,8 @@ const MOUSE_SENSITIVITY = 0.005;
 const MOVEMENT_SPEED = 0.05; // Units per second (Reduced by 100x)
 const LOAD_RADIUS_XZ = 4; // Load chunks in an N*2+1 x N*2+1 area around the player horizontally
 const LOAD_RADIUS_Y = 2; // Load chunks N levels above and below the player vertically
+const UNLOAD_BUFFER_XZ = 2; // Unload chunks XZ distance > LOAD_RADIUS_XZ + this buffer
+const UNLOAD_BUFFER_Y = 1; // Unload chunks Y distance > LOAD_RADIUS_Y + this buffer
 
 // --- FPS Calculation State ---
 const frameTimes: number[] = [];
@@ -514,10 +516,36 @@ async function main() {
 
     device.queue.submit([commandEncoder.finish()]);
 
-    // --- Dynamic Chunk Loading ---
-    const camChunkX = Math.floor(cameraPosition[0] / CHUNK_SIZE_X);
-    const camChunkY = Math.floor(cameraPosition[1] / CHUNK_SIZE_Y);
-    const camChunkZ = Math.floor(cameraPosition[2] / CHUNK_SIZE_Z);
+    // --- Chunk Unloading ---
+    const camChunkXUnload = Math.floor(cameraPosition[0] / CHUNK_SIZE_X);
+    const camChunkYUnload = Math.floor(cameraPosition[1] / CHUNK_SIZE_Y);
+    const camChunkZUnload = Math.floor(cameraPosition[2] / CHUNK_SIZE_Z);
+
+    for (const [key, chunkMesh] of chunkMeshes.entries()) {
+      const { x, y, z } = chunkMesh.position; // Chunk's integer position
+
+      const dx = Math.abs(x - camChunkXUnload);
+      const dy = Math.abs(y - camChunkYUnload);
+      const dz = Math.abs(z - camChunkZUnload);
+
+      // Check if the chunk is outside the rendering distance plus the buffer
+      if (
+        dx > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ ||
+        dy > LOAD_RADIUS_Y + UNLOAD_BUFFER_Y ||
+        dz > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ
+      ) {
+        console.log(`[Main] Unloading chunk: ${key}`);
+        chunkMesh.vertexBuffer.destroy();
+        chunkMesh.indexBuffer.destroy();
+        chunkMeshes.delete(key);
+        requestedChunkKeys.delete(key); // Also remove from requested set if it was unloaded before it finished loading
+      }
+    }
+
+    // --- Dynamic Chunk Loading (uses separate cam chunk coords for clarity) ---
+    const camChunkXLoad = Math.floor(cameraPosition[0] / CHUNK_SIZE_X);
+    const camChunkYLoad = Math.floor(cameraPosition[1] / CHUNK_SIZE_Y);
+    const camChunkZLoad = Math.floor(cameraPosition[2] / CHUNK_SIZE_Z);
 
     // --- Update Debug Info ---
     if (debugInfoElement) {
@@ -541,7 +569,7 @@ async function main() {
 Pos:    (${cameraPosition[0].toFixed(1)}, ${cameraPosition[1].toFixed(
         1
       )}, ${cameraPosition[2].toFixed(1)})
-Chunk:  (${camChunkX}, ${camChunkY}, ${camChunkZ})
+Chunk:  (${camChunkXLoad}, ${camChunkYLoad}, ${camChunkZLoad}) // Use Load coords for debug
 Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(
         2
       )}, ${lookDirection[2].toFixed(2)})
@@ -594,9 +622,9 @@ Mesh:   ${meshingMode}
           xOffset++
         ) {
           const chunkPos = {
-            x: camChunkX + xOffset,
-            y: camChunkY + yOffset,
-            z: camChunkZ + zOffset,
+            x: camChunkXLoad + xOffset,
+            y: camChunkYLoad + yOffset,
+            z: camChunkZLoad + zOffset,
           };
           const key = getChunkKey(chunkPos);
 
