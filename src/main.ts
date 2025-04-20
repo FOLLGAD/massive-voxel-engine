@@ -222,13 +222,22 @@ async function main() {
 
   console.log("WebGPU Initialized");
 
-  // Initialize worker with worker.js. Do not edit this line!!!
-  const worker = new Worker("./worker.js", { type: "module" });
+  // Initialize worker pool
+  const numWorkers = navigator.hardwareConcurrency || 4; // Use hardware concurrency or default to 4
+  console.log(`Initializing ${numWorkers} workers...`);
+  const workers: Worker[] = [];
+  for (let i = 0; i < numWorkers; i++) {
+    console.log(`Initializing worker ${i + 1}/${numWorkers}...`);
+    workers.push(new Worker("./worker.js", { type: "module" }));
+  }
+  let nextWorkerIndex = 0;
 
-  console.log("Worker initialized");
+  console.log(`${numWorkers} Workers initialized`);
 
-  worker.onmessage = (event) => {
-    console.log(`[Main] Received message type: ${event.data.type}`); // Log received message type
+  const workerMessageHandler = (event: MessageEvent) => {
+    console.log(
+      `[Main] Received message type: ${event.data.type} from a worker`
+    ); // Log received message type
 
     if (event.data.type === "chunkMeshAvailable") {
       const {
@@ -238,31 +247,6 @@ async function main() {
       } = event.data;
       const vertices = new Float32Array(verticesBuffer);
       const indices = new Uint32Array(indicesBuffer);
-
-      console.log(
-        // Log data lengths
-        `[Main] Received mesh data for ${getChunkKey(position)}: Vertices=${
-          vertices.length / 9
-        }, Indices=${indices.length}`
-      );
-      // Log first few full vertices (pos, color, normal)
-      if (vertices.length >= 27) {
-        // Check if there's enough data for 3 vertices
-        console.log(
-          "[Main] Sample Vertex 1 (Pos, Col, Norm):",
-          vertices.slice(0, 9)
-        );
-        console.log(
-          "[Main] Sample Vertex 2 (Pos, Col, Norm):",
-          vertices.slice(9, 18)
-        );
-        console.log(
-          "[Main] Sample Vertex 3 (Pos, Col, Norm):",
-          vertices.slice(18, 27)
-        );
-      } else {
-        console.log("[Main] Sample Vertices (Raw):", vertices.slice(0, 27)); // Log what we have
-      }
 
       // Add try...catch around buffer creation/writing
       try {
@@ -310,6 +294,11 @@ async function main() {
       console.warn("[Main] Unknown message type from worker:", event.data.type);
     }
   };
+
+  // Attach the handler to each worker
+  for (const worker of workers) {
+    worker.onmessage = workerMessageHandler;
+  }
 
   // --- Rendering Setup ---
 
@@ -505,7 +494,6 @@ async function main() {
     // Calculate total triangles rendered
     let totalTriangles = 0;
     for (const mesh of chunkMeshes.values()) {
-      console.log(`[Main Frame] Drawing mesh with ${mesh.indexCount} indices.`); // Log draw attempt
       passEncoder.setVertexBuffer(0, mesh.vertexBuffer);
       passEncoder.setIndexBuffer(mesh.indexBuffer, "uint32");
       passEncoder.drawIndexed(mesh.indexCount);
@@ -629,9 +617,16 @@ Mesh:   ${meshingMode}
           const key = getChunkKey(chunkPos);
 
           if (!requestedChunkKeys.has(key)) {
-            console.log(`[Main] Requesting chunk: ${key}`);
+            console.log(
+              `[Main] Requesting chunk: ${key} (Worker ${nextWorkerIndex + 1})`
+            );
             requestedChunkKeys.add(key);
-            worker.postMessage({ type: "requestChunk", position: chunkPos });
+            // Send to the next worker in the pool (round-robin)
+            workers[nextWorkerIndex].postMessage({
+              type: "requestChunk",
+              position: chunkPos,
+            });
+            nextWorkerIndex = (nextWorkerIndex + 1) % workers.length;
           }
         }
       }
