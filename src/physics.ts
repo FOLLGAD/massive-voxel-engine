@@ -11,9 +11,10 @@ export const PLAYER_HEIGHT = 1.8;
 export const PLAYER_WIDTH = 0.6; // Includes depth
 export const MOVE_SPEED = 5.0; // Units per second
 const PLAYER_HALF_WIDTH = PLAYER_WIDTH / 2;
-const STEP_CHECK_INCREMENT = 0.1; // How finely to check for steps - might remove later
 const COLLISION_EPSILON = 1e-6; // Small offset to prevent floating point issues
 const PLAYER_EYE_LEVEL = 1.87; // Eye level not directly needed for collision physics
+
+const FLYING_MODE = true;
 
 // --- AABB Structure and Helpers ---
 
@@ -343,7 +344,6 @@ export function updatePhysics(
 ): PlayerState {
   const { position, velocity } = playerState;
   let isGrounded = playerState.isGrounded;
-  const originalPosition = vec3.clone(position);
 
   // 1. Calculate Desired Velocity based on input
   const desiredVelocity = calculateDesiredVelocity(
@@ -353,11 +353,23 @@ export function updatePhysics(
   );
 
   // 2. Apply Gravity
-  applyGravity(velocity, deltaTimeSeconds);
+  if (!FLYING_MODE) {
+    applyGravity(velocity, deltaTimeSeconds);
+  }
 
-  // 3. Handle Jumping
-  if (pressedKeys.has("Space")) {
-    isGrounded = handleJump(velocity, isGrounded);
+  if (FLYING_MODE) {
+    velocity[1] = 0;
+    if (pressedKeys.has("Space")) {
+      velocity[1] = JUMP_VELOCITY;
+    }
+    if (pressedKeys.has("ShiftLeft")) {
+      velocity[1] = -JUMP_VELOCITY;
+    }
+  } else {
+    // 3. Handle Jumping
+    if (pressedKeys.has("Space")) {
+      isGrounded = handleJump(velocity, isGrounded);
+    }
   }
 
   // 4. Calculate displacement for this frame

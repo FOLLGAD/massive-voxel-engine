@@ -21,40 +21,42 @@ self.onmessage = (event) => {
     try {
       const chunk = terrain.generateTerrain(position);
 
-      // Send voxel data FIRST (or concurrently) for physics
-      self.postMessage(
-        {
-          type: "chunkDataAvailable",
-          position: position,
-          voxels: chunk.data.slice(), // Send the Uint8Array itself
-        },
-        [chunk.data.buffer.slice()] // Transfer the buffer
-      );
-
-      const mesh = chunk.generateMesh(); // Calls the appropriate mesher based on the flag
-      log(
-        "Worker",
-        `Mesh generated. Vertices count: ${
-          mesh.vertices.length / 9
-        }, Indices count: ${mesh.indices.length}`
-      ); // Vertices are pos+color+normal (9 floats)
-
-      if (mesh.vertices.length > 0 && mesh.indices.length > 0) {
+      if (chunk.data.length > 0) {
+        // Send voxel data FIRST (or concurrently) for physics
         self.postMessage(
           {
-            type: "chunkMeshAvailable",
+            type: "chunkDataAvailable",
             position: position,
-            vertices: mesh.vertices.buffer,
-            indices: mesh.indices.buffer,
+            voxels: chunk.data.slice(), // Send the Uint8Array itself
           },
-          [mesh.vertices.buffer, mesh.indices.buffer]
+          [chunk.data.buffer.slice()] // Transfer the buffer
         );
-      } else {
-        log.warn(
+
+        const mesh = chunk.generateMesh(); // Calls the appropriate mesher based on the flag
+        log(
           "Worker",
-          `Skipping postMessage for empty mesh at ${JSON.stringify(position)}`
-        );
-        self.postMessage({ type: "chunkMeshEmpty", position: position });
+          `Mesh generated. Vertices count: ${
+            mesh.vertices.length / 9
+          }, Indices count: ${mesh.indices.length}`
+        ); // Vertices are pos+color+normal (9 floats)
+
+        if (mesh.vertices.length > 0 && mesh.indices.length > 0) {
+          self.postMessage(
+            {
+              type: "chunkMeshAvailable",
+              position: position,
+              vertices: mesh.vertices.buffer,
+              indices: mesh.indices.buffer,
+            },
+            [mesh.vertices.buffer, mesh.indices.buffer]
+          );
+        } else {
+          log.warn(
+            "Worker",
+            `Skipping postMessage for empty mesh at ${JSON.stringify(position)}`
+          );
+          self.postMessage({ type: "chunkMeshEmpty", position: position });
+        }
       }
     } catch (error) {
       log.error("Worker", "Error during mesh generation or posting:", error);

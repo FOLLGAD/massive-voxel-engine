@@ -7,7 +7,11 @@ import {
   CHUNK_SIZE_X,
   CHUNK_SIZE_Y,
   CHUNK_SIZE_Z,
+  LOAD_RADIUS_XZ,
+  LOAD_RADIUS_Y,
   PHYSICS_FPS,
+  UNLOAD_BUFFER_XZ,
+  UNLOAD_BUFFER_Y,
 } from "./common/constants";
 import { PlayerState, updatePhysics } from "./physics"; // Import physics
 import {
@@ -17,6 +21,8 @@ import {
 } from "./renderer"; // Import renderer
 import { getChunkKey, type ChunkMesh } from "./chunk";
 import log from "./logger";
+
+const DEBUG_MODE = false;
 
 log("Main", "Main script loaded.");
 
@@ -35,12 +41,6 @@ let lastMouseX = 0;
 let lastMouseY = 0;
 const MOUSE_SENSITIVITY = 0.005;
 const pressedKeys = new Set<string>();
-
-// --- Chunk Loading Config ---
-const LOAD_RADIUS_XZ = 4;
-const LOAD_RADIUS_Y = 2;
-const UNLOAD_BUFFER_XZ = 2;
-const UNLOAD_BUFFER_Y = 1;
 
 // --- FPS Calculation State ---
 const frameTimes: number[] = [];
@@ -145,11 +145,24 @@ async function main() {
         rendererState.device.queue.writeBuffer(indexBuffer, 0, indices);
 
         const key = getChunkKey(position);
+
+        // Calculate AABB in world coordinates
+        const minX = position.x * CHUNK_SIZE_X;
+        const minY = position.y * CHUNK_SIZE_Y;
+        const minZ = position.z * CHUNK_SIZE_Z;
+        const maxX = minX + CHUNK_SIZE_X;
+        const maxY = minY + CHUNK_SIZE_Y;
+        const maxZ = minZ + CHUNK_SIZE_Z;
+
         chunkMeshes.set(key, {
           position: position,
           vertexBuffer: vertexBuffer,
           indexBuffer: indexBuffer,
           indexCount: indices.length,
+          aabb: {
+            min: vec3.fromValues(minX, minY, minZ),
+            max: vec3.fromValues(maxX, maxY, maxZ),
+          },
         });
         requestedChunkKeys.add(key);
       } catch (error) {
@@ -231,6 +244,17 @@ async function main() {
     const deltaTime = now - lastFrameTime;
     lastFrameTime = now;
 
+    const debugCameraPosition = vec3.fromValues(
+      playerState.position[0] - 150,
+      playerState.position[1] + 150,
+      playerState.position[2] - 150
+    );
+    const debugCameraTarget = vec3.fromValues(
+      playerState.position[0],
+      playerState.position[1],
+      playerState.position[2]
+    );
+
     // --- Rendering ---
     const renderResult = renderFrame(
       rendererState,
@@ -238,7 +262,10 @@ async function main() {
       playerState.getCameraPosition(),
       cameraPitch,
       cameraYaw,
-      chunkMeshes
+      chunkMeshes,
+      debugCameraPosition,
+      debugCameraTarget,
+      DEBUG_MODE
     );
     rendererState.depthTexture = renderResult.updatedDepthTexture;
     lastTotalTriangles = renderResult.totalTriangles;
@@ -310,6 +337,8 @@ Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(
         2
       )}, ${lookDirection[2].toFixed(2)})
 Chunks: ${chunkMeshes.size} (${requestedChunkKeys.size} req)
+Drawn:  ${rendererState.debugInfo.drawnChunks}
+Culled: ${rendererState.debugInfo.culledChunks}
 Tris:   ${lastTotalTriangles.toLocaleString()}
 FPS:    ${fps.toFixed(1)}
 Mesh:   ${meshingMode}

@@ -1,3 +1,4 @@
+import type { vec3 } from "gl-matrix";
 import {
   CHUNK_SIZE_X,
   CHUNK_SIZE_Y,
@@ -396,6 +397,7 @@ export interface ChunkMesh {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
   indexCount: number;
+  aabb: { min: vec3; max: vec3 }; // Add AABB for frustum culling
 }
 
 export function getChunkKey(pos: { x: number; y: number; z: number }): string {
