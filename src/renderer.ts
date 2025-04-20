@@ -12,6 +12,10 @@ export interface RendererState {
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   depthTexture: GPUTexture;
+  // Reusable matrices
+  viewMatrix: mat4;
+  projectionMatrix: mat4;
+  vpMatrix: mat4; // View * Projection
 }
 
 // --- Shaders ---
@@ -94,16 +98,6 @@ function updateViewMatrix(
 
   const center = vec3.create();
   vec3.add(center, eye, direction);
-
-  // DEBUG: Log lookAt parameters
-  log(
-    "Renderer",
-    `lookAt eye: (${eye[0].toFixed(1)}, ${eye[1].toFixed(1)}, ${eye[2].toFixed(
-      1
-    )}), center: (${center[0].toFixed(1)}, ${center[1].toFixed(
-      1
-    )}, ${center[2].toFixed(1)})`
-  );
 
   mat4.lookAt(viewMatrix, eye, center, up);
 }
@@ -226,6 +220,11 @@ export async function initializeRenderer(
   // Depth Texture
   const depthTexture = configureDepthTexture(device, canvas, null);
 
+  // Create matrices once
+  const viewMatrix = mat4.create();
+  const projectionMatrix = mat4.create();
+  const vpMatrix = mat4.create();
+
   return {
     device,
     context,
@@ -234,6 +233,10 @@ export async function initializeRenderer(
     uniformBuffer,
     bindGroup,
     depthTexture,
+    // Add matrices to state
+    viewMatrix,
+    projectionMatrix,
+    vpMatrix,
   };
 }
 
@@ -249,22 +252,26 @@ export function renderFrame(
   updatedDepthTexture: GPUTexture;
   totalTriangles: number;
 } {
-  const { device, context, voxelPipeline, uniformBuffer, bindGroup } =
-    rendererState;
-  let { depthTexture } = rendererState;
+  const {
+    device,
+    context,
+    voxelPipeline,
+    uniformBuffer,
+    bindGroup,
+    viewMatrix, // Get from state
+    projectionMatrix, // Get from state
+    vpMatrix, // Get from state
+  } = rendererState;
+  let { depthTexture } = rendererState; // depthTexture might be updated
 
   // Ensure depth texture is correctly sized
   depthTexture = configureDepthTexture(device, canvas, depthTexture);
 
-  const viewMatrix = mat4.create();
+  // Update matrices (reuse existing ones)
   updateViewMatrix(viewMatrix, cameraPosition, cameraPitch, cameraYaw);
-
-  const projectionMatrix = mat4.create();
   const aspect = canvas.width / canvas.height;
   mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 0.1, 1000.0);
-
-  const vpMatrix = mat4.create(); // View * Projection
-  mat4.multiply(vpMatrix, projectionMatrix, viewMatrix);
+  mat4.multiply(vpMatrix, projectionMatrix, viewMatrix); // vp = proj * view
 
   // --- Prepare Render Pass ---
   const commandEncoder = device.createCommandEncoder();
@@ -288,11 +295,15 @@ export function renderFrame(
   const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
 
   // --- Draw Voxel World ---
-  device.queue.writeBuffer(uniformBuffer, 0, vpMatrix as Float32Array); // Write VP matrix (Model is identity)
+  // Write the updated VP matrix to the uniform buffer
+  device.queue.writeBuffer(uniformBuffer, 0, vpMatrix as Float32Array);
   passEncoder.setPipeline(voxelPipeline);
   passEncoder.setBindGroup(0, bindGroup);
+
   let totalTriangles = 0;
   for (const mesh of chunkMeshes.values()) {
+    // TODO: Add view frustum culling here - check if mesh.boundingBox intersects frustum
+
     passEncoder.setVertexBuffer(0, mesh.vertexBuffer);
     passEncoder.setIndexBuffer(mesh.indexBuffer, "uint32");
     passEncoder.drawIndexed(mesh.indexCount);
@@ -302,5 +313,6 @@ export function renderFrame(
   passEncoder.end();
   device.queue.submit([commandEncoder.finish()]);
 
+  // Return the potentially updated depth texture
   return { updatedDepthTexture: depthTexture, totalTriangles };
 }
