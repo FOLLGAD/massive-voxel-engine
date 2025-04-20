@@ -45,31 +45,26 @@ const server = Bun.serve({
       }
     }
 
-    // Serve JavaScript files from the dist directory
-    if (pathname.endsWith(".js")) {
-      const requestedPath = path.join(distDir, pathname);
-      // Basic security check to prevent path traversal
-      if (!requestedPath.startsWith(distDir)) {
-        console.warn(`Attempted path traversal: ${pathname}`);
-        return new Response("Forbidden", { status: 403 });
-      }
+    const requestedPath = path.join(distDir, pathname);
+    // Basic security check to prevent path traversal
+    if (!requestedPath.startsWith(distDir)) {
+      console.warn(`Attempted path traversal: ${pathname}`);
+      return new Response("Forbidden", { status: 403 });
+    }
 
-      console.log(`Attempting to serve JS file: ${requestedPath}`);
-      try {
-        const jsFile = file(requestedPath);
-        if (await jsFile.exists()) {
-          console.log(`Serving JS file: ${requestedPath}`);
-          return new Response(jsFile, {
-            headers: {
-              "Content-Type": "application/javascript; charset=utf-8",
-            },
-          });
-        }
-        console.log(`JS file not found: ${requestedPath}`);
-      } catch (error) {
-        console.error(`Error serving JS file ${requestedPath}: ${error}`);
-        return new Response("Internal Server Error", { status: 500 });
+    try {
+      const jsFile = file(requestedPath);
+      if (await jsFile.exists()) {
+        return new Response(jsFile, {
+          headers: {
+            "Content-Type": "application/javascript; charset=utf-8",
+          },
+        });
       }
+      console.log(`JS file not found: ${requestedPath}`);
+    } catch (error) {
+      console.error(`Error serving JS file ${requestedPath}: ${error}`);
+      return new Response("Internal Server Error", { status: 500 });
     }
 
     // Fallback to 404

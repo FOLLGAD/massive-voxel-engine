@@ -2,6 +2,7 @@ import { mat4, vec3, vec4 } from "gl-matrix";
 import type { ChunkMesh } from "./chunk";
 import { PLAYER_HEIGHT, PLAYER_WIDTH } from "./physics";
 
+
 // --- Constants ---
 const FRUSTUM_CULLING_EPSILON = 1e-5;
 const DEBUG_COLOR_CULLED = [1, 0, 0]; // Red
@@ -39,99 +40,12 @@ export interface RendererState {
   };
 }
 
-// --- Shaders ---
-const voxelShaderCode = `
-// Uniforms
-struct Uniforms {
-    mvpMatrix: mat4x4<f32>,
-};
-@binding(0) @group(0) var<uniform> uniforms: Uniforms;
-
-// Vertex shader input structure
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-    @location(2) normal: vec3<f32>,
-};
-
-// Vertex shader output structure (interpolated)
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-};
-
-// Vertex Shader
-@vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    out.clip_position = uniforms.mvpMatrix * vec4<f32>(in.position, 1.0);
-    out.color = in.color;
-    out.normal = in.normal;
-    return out;
-}
-
-// Fragment Shader
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let light_direction = normalize(vec3<f32>(0.8, 0.6, 0.2));
-    let ambient_light = 0.3;
-    let n_len = length(in.normal);
-    let surface_normal = select(vec3f(0.0, 0.0, 1.0), normalize(in.normal), n_len > 0.001);
-    let diffuse_intensity = max(dot(surface_normal, light_direction), 0.0);
-    let brightness = ambient_light + (1.0 - ambient_light) * diffuse_intensity;
-    let final_color = in.color * brightness;
-    return vec4<f32>(final_color, 1.0);
-}
-`;
-
-const hitboxShaderCode = `
-struct Uniforms {
-    mvpMatrix: mat4x4<f32>,
-};
-@binding(0) @group(0) var<uniform> uniforms: Uniforms;
-
-@vertex
-fn vs_main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
-    return uniforms.mvpMatrix * vec4<f32>(position, 1.0);
-}
-
-@fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 0.0, 1.0); // Red color for hitbox
-}
-`;
-
-// --- Add Line Shader Code ---
-const lineShaderCode = `
-struct Uniforms {
-    mvpMatrix: mat4x4<f32>,
-};
-@binding(0) @group(0) var<uniform> uniforms: Uniforms;
-
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-};
-
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec3<f32>,
-};
-
-@vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    out.clip_position = uniforms.mvpMatrix * vec4<f32>(in.position, 1.0);
-    out.color = in.color;
-    return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
-}
-`;
+// @ts-ignore
+import voxelShaderCode from "./shaders/voxel.wsgl" with { type: "text" };
+// @ts-ignore
+import lineShaderCode from "./shaders/line.wsgl" with { type: "text" };
+// @ts-ignore
+import cullChunksShader from "./shaders/cullChunks.wsgl" with { type: "text" };
 
 // --- Frustum Culling Helpers ---
 
