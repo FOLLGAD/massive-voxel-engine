@@ -35,6 +35,16 @@ const server = Bun.serve({
       }
     }
 
+    if (pathname === "/noise-viewer") {
+      console.log("Serving noise-viewer.html");
+      const indexFile = file(path.resolve(projectRoot, "noise-viewer.html"));
+      if (await indexFile.exists()) {
+        return new Response(indexFile, {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+    }
+
     // Serve JavaScript files from the dist directory
     if (pathname.endsWith(".js")) {
       const requestedPath = path.join(distDir, pathname);
