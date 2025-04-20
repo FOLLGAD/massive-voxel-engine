@@ -95,7 +95,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 let cameraYaw = Math.PI / 4; // Initial horizontal rotation
 let cameraPitch = -Math.PI / 8; // Initial vertical rotation (look slightly down)
 const cameraUp = vec3.fromValues(0, 1, 0); // World up direction
-const cameraPosition = vec3.fromValues(CHUNK_SIZE_X / 2, CHUNK_SIZE_Y + 5, CHUNK_SIZE_Z / 2); // Start above center of first chunk
+const cameraPosition = vec3.fromValues(
+  CHUNK_SIZE_X / 2,
+  CHUNK_SIZE_Y + 5,
+  CHUNK_SIZE_Z / 2
+); // Start above center of first chunk
 
 let isDragging = false;
 let lastMouseX = 0;
@@ -184,8 +188,12 @@ async function main() {
 
   // Keyboard Listeners
   const pressedKeys = new Set<string>(); // Keep track of pressed keys
-  window.addEventListener('keydown', (e) => { pressedKeys.add(e.code); });
-  window.addEventListener('keyup', (e) => { pressedKeys.delete(e.code); });
+  window.addEventListener("keydown", (e) => {
+    pressedKeys.add(e.code);
+  });
+  window.addEventListener("keyup", (e) => {
+    pressedKeys.delete(e.code);
+  });
 
   if (!navigator.gpu) {
     throw new Error("WebGPU not supported on this browser.");
@@ -231,16 +239,27 @@ async function main() {
 
       console.log(
         // Log data lengths
-        `[Main] Received mesh data for ${getChunkKey(position)}: Vertices=${vertices.length / 9
+        `[Main] Received mesh data for ${getChunkKey(position)}: Vertices=${
+          vertices.length / 9
         }, Indices=${indices.length}`
       );
       // Log first few full vertices (pos, color, normal)
-      if (vertices.length >= 27) { // Check if there's enough data for 3 vertices
-          console.log("[Main] Sample Vertex 1 (Pos, Col, Norm):", vertices.slice(0, 9));
-          console.log("[Main] Sample Vertex 2 (Pos, Col, Norm):", vertices.slice(9, 18));
-          console.log("[Main] Sample Vertex 3 (Pos, Col, Norm):", vertices.slice(18, 27));
+      if (vertices.length >= 27) {
+        // Check if there's enough data for 3 vertices
+        console.log(
+          "[Main] Sample Vertex 1 (Pos, Col, Norm):",
+          vertices.slice(0, 9)
+        );
+        console.log(
+          "[Main] Sample Vertex 2 (Pos, Col, Norm):",
+          vertices.slice(9, 18)
+        );
+        console.log(
+          "[Main] Sample Vertex 3 (Pos, Col, Norm):",
+          vertices.slice(18, 27)
+        );
       } else {
-           console.log("[Main] Sample Vertices (Raw):", vertices.slice(0, 27)); // Log what we have
+        console.log("[Main] Sample Vertices (Raw):", vertices.slice(0, 27)); // Log what we have
       }
 
       // Add try...catch around buffer creation/writing
@@ -405,7 +424,7 @@ async function main() {
     // Continue without debug info if not found
   }
 
-  // Basic render loop
+  // --- Game Loop ---
   function frame() {
     if (!context) {
       console.error("Context is null");
@@ -495,14 +514,40 @@ async function main() {
 
     device.queue.submit([commandEncoder.finish()]);
 
-    // Update Debug Info
+    // --- Dynamic Chunk Loading ---
+    const camChunkX = Math.floor(cameraPosition[0] / CHUNK_SIZE_X);
+    const camChunkY = Math.floor(cameraPosition[1] / CHUNK_SIZE_Y);
+    const camChunkZ = Math.floor(cameraPosition[2] / CHUNK_SIZE_Z);
+
+    // --- Update Debug Info ---
     if (debugInfoElement) {
-      const meshingMode = ENABLE_GREEDY_MESHING ? "Greedy" : "Naive"; // Read toggle if exists
+      const avgDelta =
+        frameTimes.length > 0
+          ? frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length
+          : 0;
+      const fps = avgDelta > 0 ? 1000 / avgDelta : 0;
+      frameTimes.push(avgDelta);
+      if (frameTimes.length > maxFrameSamples) frameTimes.shift();
+
+      // Calculate direction vector for debug display
+      const lookDirection = vec3.create();
+      lookDirection[0] = Math.cos(cameraPitch) * Math.sin(cameraYaw);
+      lookDirection[1] = Math.sin(cameraPitch);
+      lookDirection[2] = Math.cos(cameraPitch) * Math.cos(cameraYaw);
+      vec3.normalize(lookDirection, lookDirection);
+
+      const meshingMode = ENABLE_GREEDY_MESHING ? "Greedy" : "Naive";
       debugInfoElement.textContent = `
-Chunks: ${chunkMeshes.size}
+Pos:    (${cameraPosition[0].toFixed(1)}, ${cameraPosition[1].toFixed(
+        1
+      )}, ${cameraPosition[2].toFixed(1)})
+Chunk:  (${camChunkX}, ${camChunkY}, ${camChunkZ})
+Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(
+        2
+      )}, ${lookDirection[2].toFixed(2)})
+Chunks: ${chunkMeshes.size} (${requestedChunkKeys.size} req)
 Tris:   ${totalTriangles.toLocaleString()}
 FPS:    ${fps.toFixed(1)}
-Time:   ${averageDeltaTime.toFixed(2)} ms
 Mesh:   ${meshingMode}
         `.trim();
     }
@@ -518,39 +563,54 @@ Mesh:   ${meshingMode}
     vec3.normalize(right, right); // Horizontal right vector
 
     const speed = MOVEMENT_SPEED * averageDeltaTime;
-    if (pressedKeys.has('KeyW')) { vec3.scaleAndAdd(cameraPosition, cameraPosition, forward, speed); }
-    if (pressedKeys.has('KeyS')) { vec3.scaleAndAdd(cameraPosition, cameraPosition, forward, -speed); }
-    if (pressedKeys.has('KeyA')) { vec3.scaleAndAdd(cameraPosition, cameraPosition, right, -speed); }
-    if (pressedKeys.has('KeyD')) { vec3.scaleAndAdd(cameraPosition, cameraPosition, right, speed); }
-    if (pressedKeys.has('Space')) { cameraPosition[1] += speed; } // Move up along world Y
-    if (pressedKeys.has('ShiftLeft')) { cameraPosition[1] -= speed; } // Move down along world Y
-
-    // --- Dynamic Chunk Loading ---
-    const camChunkX = Math.floor(cameraPosition[0] / CHUNK_SIZE_X);
-    const camChunkY = Math.floor(cameraPosition[1] / CHUNK_SIZE_Y);
-    const camChunkZ = Math.floor(cameraPosition[2] / CHUNK_SIZE_Z);
+    if (pressedKeys.has("KeyW")) {
+      vec3.scaleAndAdd(cameraPosition, cameraPosition, forward, speed);
+    }
+    if (pressedKeys.has("KeyS")) {
+      vec3.scaleAndAdd(cameraPosition, cameraPosition, forward, -speed);
+    }
+    if (pressedKeys.has("KeyA")) {
+      vec3.scaleAndAdd(cameraPosition, cameraPosition, right, -speed);
+    }
+    if (pressedKeys.has("KeyD")) {
+      vec3.scaleAndAdd(cameraPosition, cameraPosition, right, speed);
+    }
+    if (pressedKeys.has("Space")) {
+      cameraPosition[1] += speed;
+    } // Move up along world Y
+    if (pressedKeys.has("ShiftLeft")) {
+      cameraPosition[1] -= speed;
+    } // Move down along world Y
 
     for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
-        for (let zOffset = -LOAD_RADIUS_XZ; zOffset <= LOAD_RADIUS_XZ; zOffset++) {
-            for (let xOffset = -LOAD_RADIUS_XZ; xOffset <= LOAD_RADIUS_XZ; xOffset++) {
-                const chunkPos = {
-                    x: camChunkX + xOffset,
-                    y: camChunkY + yOffset,
-                    z: camChunkZ + zOffset,
-                };
-                const key = getChunkKey(chunkPos);
+      for (
+        let zOffset = -LOAD_RADIUS_XZ;
+        zOffset <= LOAD_RADIUS_XZ;
+        zOffset++
+      ) {
+        for (
+          let xOffset = -LOAD_RADIUS_XZ;
+          xOffset <= LOAD_RADIUS_XZ;
+          xOffset++
+        ) {
+          const chunkPos = {
+            x: camChunkX + xOffset,
+            y: camChunkY + yOffset,
+            z: camChunkZ + zOffset,
+          };
+          const key = getChunkKey(chunkPos);
 
-                if (!requestedChunkKeys.has(key)) {
-                    console.log(`[Main] Requesting chunk: ${key}`);
-                    requestedChunkKeys.add(key);
-                    worker.postMessage({ type: "requestChunk", position: chunkPos });
-                }
-            }
+          if (!requestedChunkKeys.has(key)) {
+            console.log(`[Main] Requesting chunk: ${key}`);
+            requestedChunkKeys.add(key);
+            worker.postMessage({ type: "requestChunk", position: chunkPos });
+          }
         }
+      }
     }
 
     requestAnimationFrame(frame);
-  }
+  } // End frame loop
 
   requestAnimationFrame(frame);
 
