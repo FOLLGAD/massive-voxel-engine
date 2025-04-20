@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "sourceMap": true,
+    "lib": ["ES2017", "DOM"],
+    "types": ["@webgpu/types"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+} 

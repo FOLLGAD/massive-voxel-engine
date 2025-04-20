@@ -1,0 +1,22 @@
+{
+	"name": "massive-voxel-engine",
+	"version": "0.1.0",
+	"description": "A performant massive voxel engine using WebGPU and Web Workers",
+	"main": "dist/main.js",
+	"scripts": {
+		"build": "bun build --minify ./src/main.ts ./src/worker.ts --outdir ./dist --watch",
+		"dev": "bun --watch ./src/main.ts",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": ["voxel", "webgpu", "webworker", "engine"],
+	"author": "",
+	"license": "ISC",
+	"devDependencies": {
+		"typescript": "^5.4.5"
+	},
+	"dependencies": {
+		"@types/bun": "^1.2.10",
+		"@webgpu/types": "^0.1.60",
+		"gl-matrix": "^3.4.3"
+	}
+}
