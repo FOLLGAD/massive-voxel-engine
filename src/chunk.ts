@@ -7,6 +7,7 @@ import {
 import { VoxelType } from "./common/voxel-types";
 import { getVoxelColor, isVoxelSolid } from "./common/voxel-types";
 import { ENABLE_GREEDY_MESHING } from "./config";
+import log from "./logger";
 
 const CUBE_FACES = {
   // +X (Right)
@@ -53,14 +54,24 @@ const FACE_NORMALS: { [key: string]: [number, number, number] } = {
 
 export class Chunk {
   position: { x: number; y: number; z: number };
-  private data: Uint8Array;
+  data: Uint8Array;
 
   constructor(position: { x: number; y: number; z: number }) {
     this.position = position;
     this.data = new Uint8Array(CHUNK_VOLUME);
   }
 
+  static withData(
+    position: { x: number; y: number; z: number },
+    data: Uint8Array
+  ): Chunk {
+    const chunk = new Chunk(position);
+    chunk.data = data;
+    return chunk;
+  }
+
   getVoxel(x: number, y: number, z: number): VoxelType {
+    const index = x + y * CHUNK_SIZE_X + z * CHUNK_SIZE_X * CHUNK_SIZE_Y;
     if (
       x < 0 ||
       x >= CHUNK_SIZE_X ||
@@ -69,9 +80,14 @@ export class Chunk {
       z < 0 ||
       z >= CHUNK_SIZE_Z
     ) {
+      log.warn(
+        "Chunk",
+        `Calculated index ${index} out of bounds for chunk ${getChunkKey(
+          this.position
+        )} (size ${CHUNK_VOLUME})`
+      );
       return VoxelType.AIR;
     }
-    const index = x + y * CHUNK_SIZE_X + z * CHUNK_SIZE_X * CHUNK_SIZE_Y;
     return this.data[index];
   }
 
@@ -92,7 +108,7 @@ export class Chunk {
 
   // --- Naive Meshing Implementation (with color and normals) ---
   generateNaiveMesh(): { vertices: Float32Array; indices: Uint32Array } {
-    console.log("Generating mesh using Naive Meshing (with normals)...");
+    log("Chunk", "Generating mesh using Naive Meshing (with normals)...");
     const vertices: number[] = []; // Format: [x, y, z, r, g, b, nx, ny, nz, ...]
     const indices: number[] = [];
     let vertexArrayIndex = 0;
@@ -160,7 +176,8 @@ export class Chunk {
         }
       }
     }
-    console.log(
+    log(
+      "Chunk",
       `Naive Mesh generation complete. Vertices: ${baseVertexIndexOffset}, Floats: ${vertices.length}, Indices: ${indices.length}`
     );
     return {
@@ -346,11 +363,15 @@ export class Chunk {
       }
     }
 
-    console.log(
+    log(
+      "Chunk",
       `Revised Greedy Mesh generation complete. Vertices: ${baseVertexIndexOffset}, Floats: ${vertices.length}, Indices: ${indices.length}`
     );
     if (vertices.length === 0 || indices.length === 0) {
-      console.warn("Revised Greedy meshing produced no vertices or indices.");
+      log.warn(
+        "Chunk",
+        "Revised Greedy meshing produced no vertices or indices."
+      );
       return { vertices: new Float32Array(0), indices: new Uint32Array(0) };
     }
     return {
@@ -368,4 +389,15 @@ export class Chunk {
       return this.generateNaiveMesh();
     }
   }
+}
+
+export interface ChunkMesh {
+  position: { x: number; y: number; z: number };
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer;
+  indexCount: number;
+}
+
+export function getChunkKey(pos: { x: number; y: number; z: number }): string {
+  return `${pos.x},${pos.y},${pos.z}`;
 }

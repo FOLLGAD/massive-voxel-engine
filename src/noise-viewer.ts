@@ -1,4 +1,5 @@
 import { mkSimplexNoise, type SimplexNoise, type PRNG } from "../src/noise";
+import log from "./logger";
 
 // Simple deterministic PRNG based on seed
 // From https://stackoverflow.com/a/19303725/1480448
@@ -54,7 +55,10 @@ function drawNoise() {
   }
 
   ctx.putImageData(imageData, 0, 0);
-  console.log(`Noise drawn with scale: ${currentScale}, seed: ${currentSeed}`);
+  log(
+    "NoiseViewer",
+    `Noise drawn with scale: ${currentScale}, seed: ${currentSeed}`
+  );
 }
 
 function setupAndDraw() {
@@ -66,7 +70,7 @@ function setupAndDraw() {
   currentSeed = Number.isNaN(seedValue) ? Date.now() : seedValue; // Use timestamp if seed is invalid
   seedInput.value = currentSeed.toString(); // Update input if timestamp was used
 
-  console.log(`Initializing noise with seed: ${currentSeed}`);
+  log("NoiseViewer", `Initializing noise with seed: ${currentSeed}`);
   const prng = mulberry32(currentSeed);
   noise = mkSimplexNoise(prng);
 

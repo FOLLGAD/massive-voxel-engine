@@ -1,6 +1,7 @@
 import { Chunk } from "./chunk";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
 import { VoxelType } from "./common/voxel-types";
+import log from "./logger";
 import { mkSimplexNoise, mulberry32, type SimplexNoise } from "./noise";
 
 const seedFn = mulberry32(12345);
@@ -113,7 +114,8 @@ export class Terrain {
         }
       }
     }
-    console.log(
+    log(
+      "Terrain",
       `Perlin terrain generation complete for chunk ${chunk.position.x},${chunk.position.y},${chunk.position.z}`
     );
 
@@ -123,7 +125,8 @@ export class Terrain {
       const stoneY = Math.floor(Math.random() * CHUNK_SIZE_Y);
       const stoneZ = Math.floor(Math.random() * CHUNK_SIZE_Z);
       chunk.setVoxel(stoneX, stoneY, stoneZ, VoxelType.STONE);
-      console.log(
+      log(
+        "Terrain",
         `[Debug] Added random stone block at ${stoneX},${stoneY},${stoneZ} in chunk ${chunk.position.x},${chunk.position.y},${chunk.position.z}`
       );
     }
