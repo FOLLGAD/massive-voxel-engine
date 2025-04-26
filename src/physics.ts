@@ -2,7 +2,8 @@ import { vec3 } from "gl-matrix";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
 import log from "./logger";
 import { Chunk, getChunkKey } from "./chunk";
-import { ENABLE_FLYING_MODE, FLYING_SPEED } from "./config";
+import { FLYING_SPEED } from "./config";
+import type { KeyboardState } from "./keyboard";
 
 // --- Physics Constants ---
 export const GRAVITY = -16.0; // Units per second squared
@@ -77,11 +78,13 @@ export class PlayerState {
   position: vec3;
   velocity: vec3;
   isGrounded: boolean;
+  isFlying: boolean;
 
   constructor() {
     this.position = vec3.fromValues(0, 48, 0);
     this.velocity = vec3.create();
     this.isGrounded = false;
+    this.isFlying = false;
   }
 
   static fromValues(
@@ -195,9 +198,9 @@ function getPotentialVoxelCollisions(
 // --- Movement Calculation Helpers ---
 
 function calculateDesiredVelocity(
-  pressedKeys: Set<string>,
+  keyboardState: KeyboardState,
   cameraYaw: number,
-  currentVelocity: vec3 // Pass current velocity if needed for complex movement
+  speed: number
 ): vec3 {
   const desiredVelocity = vec3.create();
   const cameraUp = vec3.fromValues(0, 1, 0);
@@ -211,33 +214,29 @@ function calculateDesiredVelocity(
   vec3.cross(right, forward, cameraUp);
   vec3.normalize(right, right);
 
-  if (pressedKeys.has("KeyW")) {
+  if (keyboardState.downKeys.has("KeyW")) {
     vec3.add(desiredVelocity, desiredVelocity, forward);
   }
-  if (pressedKeys.has("KeyS")) {
+  if (keyboardState.downKeys.has("KeyS")) {
     vec3.subtract(desiredVelocity, desiredVelocity, forward);
   }
-  if (pressedKeys.has("KeyA")) {
+  if (keyboardState.downKeys.has("KeyA")) {
     vec3.subtract(desiredVelocity, desiredVelocity, right);
   }
-  if (pressedKeys.has("KeyD")) {
+  if (keyboardState.downKeys.has("KeyD")) {
     vec3.add(desiredVelocity, desiredVelocity, right);
   }
 
   if (desiredVelocity[0] !== 0 || desiredVelocity[2] !== 0) {
     vec3.normalize(desiredVelocity, desiredVelocity);
-    if (ENABLE_FLYING_MODE) {
-      vec3.scale(desiredVelocity, desiredVelocity, FLYING_SPEED);
-    } else {
-      vec3.scale(desiredVelocity, desiredVelocity, MOVE_SPEED);
-    }
+    vec3.scale(desiredVelocity, desiredVelocity, speed);
   }
 
   return desiredVelocity;
 }
 
-function applyGravity(velocity: vec3, deltaTimeSeconds: number) {
-  velocity[1] += GRAVITY * deltaTimeSeconds;
+function applyGravity(velocity: vec3, deltaTimeMs: number) {
+  velocity[1] += GRAVITY * (deltaTimeMs / 1000);
 }
 
 function handleJump(velocity: vec3, isGrounded: boolean): boolean {
@@ -338,34 +337,37 @@ function resolveCollisionsAxis(
 // --- Physics Update Function (To be refactored for AABB) ---
 export function updatePhysics(
   playerState: PlayerState,
-  pressedKeys: Set<string>,
+  keyboardState: KeyboardState,
   cameraYaw: number, // Needed for movement direction
-  deltaTimeSeconds: number,
+  deltaTimeMs: number,
   loadedChunkData: Map<string, Uint8Array> // Pass chunk data map
 ): PlayerState {
   const { position, velocity } = playerState;
-  let isGrounded = playerState.isGrounded;
+
+  if (keyboardState.pressedKeys.has("KeyF")) {
+    playerState.isFlying = !playerState.isFlying;
+  }
 
   // 1. Calculate Desired Velocity based on input
   const desiredVelocity = calculateDesiredVelocity(
-    pressedKeys,
+    keyboardState,
     cameraYaw,
-    velocity
+    playerState.isFlying ? FLYING_SPEED : MOVE_SPEED
   );
 
   // 2. Apply Gravity
-  if (!ENABLE_FLYING_MODE) {
-    applyGravity(velocity, deltaTimeSeconds);
+  if (!playerState.isFlying) {
+    applyGravity(velocity, deltaTimeMs);
 
-    if (pressedKeys.has("Space")) {
-      isGrounded = handleJump(velocity, isGrounded);
+    if (keyboardState.downKeys.has("Space")) {
+      playerState.isGrounded = handleJump(velocity, playerState.isGrounded);
     }
   } else {
     velocity[1] = 0;
-    if (pressedKeys.has("Space")) {
+    if (keyboardState.downKeys.has("Space")) {
       velocity[1] = JUMP_VELOCITY;
     }
-    if (pressedKeys.has("ShiftLeft")) {
+    if (keyboardState.downKeys.has("ShiftLeft")) {
       velocity[1] = -JUMP_VELOCITY;
     }
   }
@@ -373,9 +375,9 @@ export function updatePhysics(
   // 4. Calculate displacement for this frame
   // Horizontal movement is based purely on intent for this frame
   // Vertical movement includes gravity/jump velocity accumulated
-  const dx = desiredVelocity[0] * deltaTimeSeconds;
-  const dy = velocity[1] * deltaTimeSeconds;
-  const dz = desiredVelocity[2] * deltaTimeSeconds;
+  const dx = desiredVelocity[0] * (deltaTimeMs / 1000);
+  const dy = velocity[1] * (deltaTimeMs / 1000);
+  const dz = desiredVelocity[2] * (deltaTimeMs / 1000);
 
   // 5. Resolve Collisions and Apply Movement using AABB
 
@@ -400,12 +402,12 @@ export function updatePhysics(
   if (collidedY) {
     if (dy < 0) {
       // Collided while moving down
-      isGrounded = true;
+      playerState.isGrounded = true;
     }
 
     velocity[1] = 0; // Stop vertical velocity on collision
   } else {
-    isGrounded = false; // Not grounded if moved freely vertically
+    playerState.isGrounded = false; // Not grounded if moved freely vertically
   }
   // Update AABB after Y movement before resolving X/Z
   let intermediateAABB = getPlayerAABB(position);
@@ -437,15 +439,13 @@ export function updatePhysics(
   position[2] += resolvedDz;
   const collidedZ = Math.abs(resolvedDz - dz) > COLLISION_EPSILON;
   if (collidedZ) {
-    // TODO: Implement Stepping check here
-    // If stepping fails or is not applicable:
-    velocity[2] = 0; // Stop Z velocity on collision
+    velocity[2] = 0;
   }
 
-  if (isGrounded) {
+  if (playerState.isGrounded) {
     velocity[1] = 0;
   }
 
   // Return the updated state
-  return PlayerState.fromValues(position, velocity, isGrounded);
+  return playerState;
 }

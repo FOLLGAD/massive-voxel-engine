@@ -9,7 +9,6 @@ import {
   CHUNK_SIZE_Z,
   LOAD_RADIUS_XZ,
   LOAD_RADIUS_Y,
-  PHYSICS_FPS,
   UNLOAD_BUFFER_XZ,
   UNLOAD_BUFFER_Y,
 } from "./common/constants";
@@ -17,6 +16,7 @@ import { PlayerState, updatePhysics } from "./physics"; // Import physics
 import { Renderer } from "./renderer"; // Import renderer
 import { getChunkKey, type ChunkMesh } from "./chunk";
 import log from "./logger";
+import { KeyboardState } from "./keyboard";
 
 const DEBUG_MODE = false;
 
@@ -26,19 +26,18 @@ log("Main", "Main script loaded.");
 const chunkMeshes = new Map<string, ChunkMesh>();
 const loadedChunkData = new Map<string, Uint8Array>();
 const requestedChunkKeys = new Set<string>();
-let playerState = new PlayerState();
+const playerState = new PlayerState();
 let rendererState: Renderer | null = null; // Will be initialized later
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
 let cameraPitch = -Math.PI / 8;
 const MOUSE_SENSITIVITY = 0.005;
-const pressedKeys = new Set<string>();
+const keyboardState = new KeyboardState();
 
 // --- FPS Calculation State ---
 const frameTimes: number[] = [];
 const maxFrameSamples = 60;
-let lastFrameTime = performance.now();
 
 async function main() {
   const canvas = document.getElementById("webgpu-canvas") as HTMLCanvasElement;
@@ -79,10 +78,21 @@ async function main() {
   });
 
   window.addEventListener("keydown", (e) => {
-    pressedKeys.add(e.code);
+    console.log("keydown", e.code);
+    if (e.repeat) return;
+    keyboardState.pressedKeys.add(e.code);
+    keyboardState.downKeys.add(e.code);
   });
   window.addEventListener("keyup", (e) => {
-    pressedKeys.delete(e.code);
+    console.log("keyup", e.code);
+    keyboardState.downKeys.delete(e.code);
+  });
+  window.addEventListener("mousedown", () => {
+    keyboardState.mouseDown = true;
+    keyboardState.mouseClicked = true;
+  });
+  window.addEventListener("mouseup", () => {
+    keyboardState.mouseDown = false;
   });
 
   // --- Initialize Renderer ---
@@ -107,7 +117,7 @@ async function main() {
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
     const type = event.data.type;
-    log("Main", `Received message type: ${type}`);
+    log("Worker", `Received message type: ${type}`);
 
     if (type === "chunkMeshAvailable") {
       const {
@@ -164,7 +174,7 @@ async function main() {
       requestedChunkKeys.add(key);
     } else if (type === "chunkMeshEmpty") {
       const key = getChunkKey(event.data.position);
-      log("Main", `Received empty mesh confirmation for chunk ${key}`);
+      log("Chunk", `Received empty mesh confirmation for chunk ${key}`);
       requestedChunkKeys.add(key);
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
@@ -179,18 +189,114 @@ async function main() {
     "debug-info"
   ) as HTMLDivElement;
 
-  const physicsStep = (deltaTime: number) => {
-    // --- Physics Update ---
-    playerState = updatePhysics(
-      playerState,
-      pressedKeys,
-      cameraYaw,
-      deltaTime / 1000,
-      loadedChunkData
-    );
+  const getBlockLookedAt = (position: vec3, cameraYaw: number) => {
+    const lookDirection = vec3.create();
+    lookDirection[0] = Math.cos(cameraPitch) * Math.sin(cameraYaw);
+    lookDirection[1] = Math.sin(cameraPitch);
+    lookDirection[2] = Math.cos(cameraPitch) * Math.cos(cameraYaw);
+    vec3.normalize(lookDirection, lookDirection);
+
+    const rayStart = vec3.create();
+    vec3.copy(rayStart, position);
+    const rayEnd = vec3.create();
+    vec3.scaleAndAdd(rayEnd, rayStart, lookDirection, 100);
+
+    // Raycast to find the block the player is looking at
+    const MAX_DISTANCE = 20.0; // Maximum distance to check for blocks
+    const STEP_SIZE = 0.05; // Size of each step along the ray
+
+    // Start from eye position (slightly above player position)
+    const eyePosition = vec3.clone(rayStart);
+    eyePosition[1] += 1.7; // Approximate eye height
+
+    const currentPos = vec3.clone(eyePosition);
+    let hitBlock: { x: number; y: number; z: number; face: number } | null =
+      null;
+    let hitFace: number | null = null;
+    const lastPos = vec3.clone(currentPos);
+
+    // Step along the ray
+    for (let distance = 0; distance <= MAX_DISTANCE; distance += STEP_SIZE) {
+      vec3.scaleAndAdd(currentPos, eyePosition, lookDirection, distance);
+
+      // Get block at current position
+      const blockX = Math.floor(currentPos[0]);
+      const blockY = Math.floor(currentPos[1]);
+      const blockZ = Math.floor(currentPos[2]);
+
+      // Get chunk key for this block
+      const chunkX = Math.floor(blockX / CHUNK_SIZE_X);
+      const chunkY = Math.floor(blockY / CHUNK_SIZE_Y);
+      const chunkZ = Math.floor(blockZ / CHUNK_SIZE_Z);
+      const chunkKey = `${chunkX},${chunkY},${chunkZ}`;
+
+      // Check if chunk is loaded
+      const chunkData = loadedChunkData.get(chunkKey);
+      if (!chunkData) continue;
+
+      // Get local coordinates within chunk
+      const localX = ((blockX % CHUNK_SIZE_X) + CHUNK_SIZE_X) % CHUNK_SIZE_X;
+      const localY = ((blockY % CHUNK_SIZE_Y) + CHUNK_SIZE_Y) % CHUNK_SIZE_Y;
+      const localZ = ((blockZ % CHUNK_SIZE_Z) + CHUNK_SIZE_Z) % CHUNK_SIZE_Z;
+
+      // Get voxel index
+      const voxelIndex =
+        localX + localY * CHUNK_SIZE_X + localZ * CHUNK_SIZE_X * CHUNK_SIZE_Y;
+
+      // Check if block exists (non-zero)
+      if (chunkData[voxelIndex] !== 0) {
+        // Determine which face was hit by checking which axis changed most recently
+        const dx = currentPos[0] - lastPos[0];
+        const dy = currentPos[1] - lastPos[1];
+        const dz = currentPos[2] - lastPos[2];
+
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        const absDz = Math.abs(dz);
+
+        if (absDx >= absDy && absDx >= absDz) {
+          hitFace = dx > 0 ? 0 : 1; // +X or -X face
+        } else if (absDy >= absDx && absDy >= absDz) {
+          hitFace = dy > 0 ? 2 : 3; // +Y or -Y face
+        } else {
+          hitFace = dz > 0 ? 4 : 5; // +Z or -Z face
+        }
+
+        hitBlock = { x: blockX, y: blockY, z: blockZ, face: hitFace };
+        break;
+      }
+
+      vec3.copy(lastPos, currentPos);
+    }
+
+    return hitBlock;
   };
 
-  setInterval(() => physicsStep(1000 / PHYSICS_FPS), 1000 / PHYSICS_FPS); // 30 fps physics
+  const physicsStep = (deltaTimeMs: number) => {
+    // --- Physics Update ---
+    updatePhysics(
+      playerState,
+      keyboardState,
+      cameraYaw,
+      deltaTimeMs,
+      loadedChunkData
+    );
+
+    if (keyboardState.mouseClicked) {
+      const blockLookedAt = getBlockLookedAt(playerState.position, cameraYaw);
+      if (blockLookedAt) {
+        log(
+          "Main",
+          `Block looked at: ${blockLookedAt.x}, ${blockLookedAt.y}, ${blockLookedAt.z}, ${blockLookedAt.face}`
+        );
+      } else {
+        log("Main", "No block looked at");
+      }
+    }
+
+    keyboardState.pressedKeys.clear();
+    keyboardState.mouseClicked = false;
+  };
 
   const unloadChunks = () => {
     const playerChunkX = Math.floor(playerState.position[0] / CHUNK_SIZE_X);
@@ -226,12 +332,8 @@ async function main() {
 
   // --- Game Loop Function ---
   let lastTotalTriangles = 0;
-  function frame() {
+  function frame(deltaTime: number) {
     if (!rendererState) return; // Renderer must be initialized
-
-    const now = performance.now();
-    const deltaTime = now - lastFrameTime;
-    lastFrameTime = now;
 
     const debugCameraPosition = vec3.fromValues(
       playerState.position[0] - 150,
@@ -279,7 +381,7 @@ async function main() {
           const key = getChunkKey(chunkPos);
           if (!requestedChunkKeys.has(key)) {
             log(
-              "Main",
+              "Chunk",
               `Requesting chunk: ${key} (Worker ${nextWorkerIndex + 1})`
             );
             requestedChunkKeys.add(key);
@@ -331,11 +433,20 @@ Mesh:   ${meshingMode}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
         `.trim();
     }
-
-    requestAnimationFrame(frame);
   }
 
-  requestAnimationFrame(frame);
+  let lastFrameTime = performance.now();
+  const frameLoop = () => {
+    const now = performance.now();
+    const deltaTime = now - lastFrameTime;
+    lastFrameTime = now;
+
+    frame(deltaTime);
+    physicsStep(deltaTime);
+    requestAnimationFrame(frameLoop);
+  };
+
+  requestAnimationFrame(frameLoop);
 
   window.addEventListener("resize", () => {
     rendererState?.resize(window.innerWidth, window.innerHeight);

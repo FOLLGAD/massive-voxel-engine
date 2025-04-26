@@ -1,4 +1,4 @@
-const enabledDomains: string[] = [];
+const enabledDomains: string[] = ["Main"];
 
 // biome-ignore lint/suspicious/noExplicitAny: <explanation>
 const log = (domain: string, message: string, ...args: any[]) => {
