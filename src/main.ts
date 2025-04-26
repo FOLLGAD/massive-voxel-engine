@@ -32,9 +32,6 @@ let rendererState: Renderer | null = null; // Will be initialized later
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
 let cameraPitch = -Math.PI / 8;
-let isDragging = false;
-let lastMouseX = 0;
-let lastMouseY = 0;
 const MOUSE_SENSITIVITY = 0.005;
 const pressedKeys = new Set<string>();
 
@@ -55,36 +52,32 @@ async function main() {
   // Prevent default context menu on right-click (optional)
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
-  // --- Input Listeners ---
-  canvas.addEventListener("mousedown", (e) => {
-    if (e.button === 0) {
-      isDragging = true;
-      lastMouseX = e.clientX;
-      lastMouseY = e.clientY;
-      canvas.style.cursor = "grabbing";
-    }
+  canvas.addEventListener("click", async () => {
+    await canvas.requestPointerLock({
+      // unadjustedMovement: true,
+    });
   });
-  canvas.addEventListener("mouseup", (e) => {
-    if (e.button === 0) {
-      isDragging = false;
-      canvas.style.cursor = "default";
-    }
-  });
-  canvas.addEventListener("mouseleave", () => {
-    isDragging = false;
-    canvas.style.cursor = "default";
-  });
-  canvas.addEventListener("mousemove", (e) => {
-    if (!isDragging) return;
-    const deltaX = e.clientX - lastMouseX;
-    const deltaY = e.clientY - lastMouseY;
+
+  const updatePosition = (e: MouseEvent) => {
+    const deltaX = e.movementX;
+    const deltaY = e.movementY;
     cameraYaw -= deltaX * MOUSE_SENSITIVITY;
     cameraPitch -= deltaY * MOUSE_SENSITIVITY;
     const pitchLimit = Math.PI / 2 - 0.01;
     cameraPitch = Math.max(-pitchLimit, Math.min(pitchLimit, cameraPitch));
-    lastMouseX = e.clientX;
-    lastMouseY = e.clientY;
+  };
+
+  // capture mouse movement
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement === canvas) {
+      console.log("The pointer lock status is now locked");
+      document.addEventListener("mousemove", updatePosition, false);
+    } else {
+      console.log("The pointer lock status is now unlocked");
+      document.removeEventListener("mousemove", updatePosition, false);
+    }
   });
+
   window.addEventListener("keydown", (e) => {
     pressedKeys.add(e.code);
   });
