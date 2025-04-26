@@ -70,7 +70,7 @@ export class Chunk {
     data?: Uint8Array
   ) {
     this.position = position;
-    this.data = data ?? new Uint8Array(CHUNK_VOLUME);
+    this.data = data ?? new Uint8Array(new SharedArrayBuffer(CHUNK_VOLUME));
   }
 
   static withData(

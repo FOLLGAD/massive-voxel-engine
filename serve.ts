@@ -24,14 +24,30 @@ const server = Bun.serve({
         const indexFile = file(indexHtmlPath);
         if (await indexFile.exists()) {
           return new Response(indexFile, {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cross-Origin-Embedder-Policy": "require-corp",
+              "Cross-Origin-Opener-Policy": "same-origin",
+            },
           });
         }
         console.error(`index.html not found at ${indexHtmlPath}`);
-        return new Response("Not Found", { status: 404 });
+        return new Response("Not Found", {
+          status: 404,
+          headers: {
+            "Cross-Origin-Embedder-Policy": "require-corp",
+            "Cross-Origin-Opener-Policy": "same-origin",
+          },
+        });
       } catch (error) {
         console.error(`Error serving index.html: ${error}`);
-        return new Response("Internal Server Error", { status: 500 });
+        return new Response("Internal Server Error", {
+          status: 500,
+          headers: {
+            "Cross-Origin-Embedder-Policy": "require-corp",
+            "Cross-Origin-Opener-Policy": "same-origin",
+          },
+        });
       }
     }
 
@@ -40,7 +56,11 @@ const server = Bun.serve({
       const indexFile = file(path.resolve(projectRoot, "noise-viewer.html"));
       if (await indexFile.exists()) {
         return new Response(indexFile, {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cross-Origin-Embedder-Policy": "require-corp",
+            "Cross-Origin-Opener-Policy": "same-origin",
+          },
         });
       }
     }
@@ -58,6 +78,9 @@ const server = Bun.serve({
         return new Response(jsFile, {
           headers: {
             "Content-Type": "application/javascript; charset=utf-8",
+
+            "Cross-Origin-Embedder-Policy": "require-corp",
+            "Cross-Origin-Opener-Policy": "same-origin",
           },
         });
       }
@@ -69,7 +92,13 @@ const server = Bun.serve({
 
     // Fallback to 404
     console.log(`No matching route for ${pathname}, returning 404`);
-    return new Response("Not Found", { status: 404 });
+    return new Response("Not Found", {
+      status: 404,
+      headers: {
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Opener-Policy": "same-origin",
+      },
+    });
   },
   error(error) {
     console.error(`Server error: ${error}`);

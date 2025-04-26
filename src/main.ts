@@ -23,6 +23,7 @@ import {
 import log from "./logger";
 import { KeyboardState } from "./keyboard";
 import { VoxelType } from "./common/voxel-types";
+import { WorkerManager } from "./worker-manager";
 
 const DEBUG_MODE = true;
 
@@ -109,12 +110,8 @@ async function main() {
   // Initialize worker pool
   const numWorkers = navigator.hardwareConcurrency || 4;
   log("Main", `Initializing ${numWorkers} workers...`);
-  const workers: Worker[] = [];
-  for (let i = 0; i < numWorkers; i++) {
-    workers.push(new Worker("./worker.js", { type: "module" }));
-  }
-  let nextWorkerIndex = 0;
-  log("Main", `${numWorkers} Workers initialized`);
+
+  const workerManager = new WorkerManager(numWorkers);
 
   const bufferMaps = {
     vertex: new Map<string, GPUBuffer>(),
@@ -126,7 +123,21 @@ async function main() {
     const type = event.data.type;
     log("Worker", `Received message type: ${type}`);
 
-    if (type === "chunkMeshAvailable") {
+    if (type === "chunkDataAvailable") {
+      const { position, voxels } = event.data;
+      const key = getChunkKey(position);
+      // 'voxels' is now a Uint8Array view on the SharedArrayBuffer from the worker
+      const sharedVoxelData = voxels as Uint8Array; // Type assertion for clarity
+      // voxelData.set(voxels); // This line is no longer needed
+      loadedChunkData.set(key, sharedVoxelData);
+      requestedChunkKeys.add(key);
+    } else if (type === "chunkMeshEmpty") {
+      const key = getChunkKey(event.data.position);
+      log("Chunk", `Received empty mesh confirmation for chunk ${key}`);
+      requestedChunkKeys.add(key);
+    } else if (type === "chunkMeshUpdated") {
+      if (!rendererState) throw new Error("Renderer not found");
+
       const {
         position,
         vertices: verticesBuffer,
@@ -135,62 +146,57 @@ async function main() {
       if (!rendererState) return; // Guard against renderer not being ready
       const vertices = new Float32Array(verticesBuffer);
       const indices = new Uint32Array(indicesBuffer);
-      try {
-        const key = getChunkKey(position);
-        const vertexBuffer = rendererState.device.createBuffer({
-          label: `chunk-${position.x}-${position.y}-${position.z}-vertex`,
-          size: vertices.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        });
-        rendererState.device.queue.writeBuffer(vertexBuffer, 0, vertices);
-        bufferMaps.vertex.set(key, vertexBuffer);
 
-        const indexBuffer = rendererState.device.createBuffer({
-          label: `chunk-${position.x}-${position.y}-${position.z}-index`,
-          size: indices.byteLength,
-          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-        });
-        rendererState.device.queue.writeBuffer(indexBuffer, 0, indices);
-        bufferMaps.index.set(key, indexBuffer);
+      // Update the chunk mesh
+      const key = getChunkKey(position);
+      const oldChunkMesh = chunkMeshes.get(key);
 
-        // Calculate AABB in world coordinates
+      // Create new vertex buffer
+      const newVertexBuffer = rendererState.device.createBuffer({
+        label: `chunk-${position.x}-${position.y}-${position.z}-vertex`,
+        size: vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      rendererState.device.queue.writeBuffer(newVertexBuffer, 0, vertices);
+
+      // Create new index buffer
+      const newIndexBuffer = rendererState.device.createBuffer({
+        label: `chunk-${position.x}-${position.y}-${position.z}-index`,
+        size: indices.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      rendererState.device.queue.writeBuffer(newIndexBuffer, 0, indices);
+
+      if (oldChunkMesh) {
+        oldChunkMesh.vertexBuffer.destroy();
+        oldChunkMesh.indexBuffer.destroy();
+
+        oldChunkMesh.vertexBuffer = newVertexBuffer;
+        oldChunkMesh.indexBuffer = newIndexBuffer;
+        oldChunkMesh.indexCount = indices.length;
+      } else {
         const minX = position.x * CHUNK_SIZE_X;
         const minY = position.y * CHUNK_SIZE_Y;
         const minZ = position.z * CHUNK_SIZE_Z;
         const maxX = minX + CHUNK_SIZE_X;
         const maxY = minY + CHUNK_SIZE_Y;
         const maxZ = minZ + CHUNK_SIZE_Z;
-
         chunkMeshes.set(key, {
           position: position,
-          vertexBuffer: vertexBuffer,
-          indexBuffer: indexBuffer,
+          vertexBuffer: newVertexBuffer,
+          indexBuffer: newIndexBuffer,
           indexCount: indices.length,
           aabb: {
             min: vec3.fromValues(minX, minY, minZ),
             max: vec3.fromValues(maxX, maxY, maxZ),
           },
         });
-        requestedChunkKeys.add(key);
-      } catch (error) {
-        log.error("Main", "Error creating/writing GPU buffers:", error);
       }
-    } else if (type === "chunkDataAvailable") {
-      const { position, voxels } = event.data;
-      const key = getChunkKey(position);
-      loadedChunkData.set(key, new Uint8Array(voxels));
-      requestedChunkKeys.add(key);
-    } else if (type === "chunkMeshEmpty") {
-      const key = getChunkKey(event.data.position);
-      log("Chunk", `Received empty mesh confirmation for chunk ${key}`);
-      requestedChunkKeys.add(key);
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
   };
-  for (const worker of workers) {
-    worker.onmessage = workerMessageHandler;
-  }
+  workerManager.onMessageHandler(workerMessageHandler);
 
   // Debug Info Element
   const debugInfoElement = document.getElementById(
@@ -322,46 +328,11 @@ async function main() {
       chunk.setVoxel(localX, localY, localZ, VoxelType.AIR);
       loadedChunkData.set(chunkKey, chunk.data);
 
-      console.log("POSITION", chunk.position, chunkKey);
-      // Update the chunk mesh
-      const key = getChunkKey(chunk.position);
-      const oldChunkMesh = chunkMeshes.get(key);
-
-      if (!oldChunkMesh) throw new Error("Chunk mesh not found");
-      if (!rendererState) throw new Error("Renderer not found");
-
-      // Destroy the old GPU buffers before creating new ones
-      oldChunkMesh.vertexBuffer.destroy();
-      oldChunkMesh.indexBuffer.destroy();
-
-      const newChunkMesh = chunk.generateMesh();
-
-      // Create new vertex buffer
-      const newVertexBuffer = rendererState.device.createBuffer({
-        label: `chunk-${chunk.position.x}-${chunk.position.y}-${chunk.position.z}-vertex-updated`,
-        size: newChunkMesh.vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      workerManager.queueTask({
+        type: "renderChunk",
+        position: chunk.position,
+        data: chunk.data,
       });
-      rendererState.device.queue.writeBuffer(
-        newVertexBuffer,
-        0,
-        newChunkMesh.vertices
-      );
-
-      // Create new index buffer
-      const newIndexBuffer = rendererState.device.createBuffer({
-        label: `chunk-${chunk.position.x}-${chunk.position.y}-${chunk.position.z}-index-updated`,
-        size: newChunkMesh.indices.byteLength,
-        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      });
-      rendererState.device.queue.writeBuffer(
-        newIndexBuffer,
-        0,
-        newChunkMesh.indices
-      );
-      oldChunkMesh.vertexBuffer = newVertexBuffer;
-      oldChunkMesh.indexBuffer = newIndexBuffer;
-      oldChunkMesh.indexCount = newChunkMesh.indices.length;
     }
 
     keyboardState.pressedKeys.clear();
@@ -481,16 +452,12 @@ async function main() {
           };
           const key = getChunkKey(chunkPos);
           if (!requestedChunkKeys.has(key)) {
-            log(
-              "Chunk",
-              `Requesting chunk: ${key} (Worker ${nextWorkerIndex + 1})`
-            );
+            log("Chunk", `Requesting chunk: ${key}`);
             requestedChunkKeys.add(key);
-            workers[nextWorkerIndex].postMessage({
+            workerManager.queueTask({
               type: "requestChunk",
               position: chunkPos,
             });
-            nextWorkerIndex = (nextWorkerIndex + 1) % workers.length;
           }
         }
       }
