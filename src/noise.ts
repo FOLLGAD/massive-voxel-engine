@@ -105,7 +105,7 @@ const noise2D = (tables: PermTables, x: number, y: number): number => {
   return 70.0 * (n0 + n1 + n2);
 };
 
-// 3D simplex noise
+// 3D simplex noise, returns a value between -1 and 1
 /** @internal */
 const noise3D = (
   tables: PermTables,

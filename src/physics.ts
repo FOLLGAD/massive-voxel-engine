@@ -2,7 +2,7 @@ import { vec3 } from "gl-matrix";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
 import log from "./logger";
 import { Chunk, getChunkKey } from "./chunk";
-import { ENABLE_FLYING_MODE } from "./config";
+import { ENABLE_FLYING_MODE, FLYING_SPEED } from "./config";
 
 // --- Physics Constants ---
 export const GRAVITY = -16.0; // Units per second squared
@@ -226,7 +226,11 @@ function calculateDesiredVelocity(
 
   if (desiredVelocity[0] !== 0 || desiredVelocity[2] !== 0) {
     vec3.normalize(desiredVelocity, desiredVelocity);
-    vec3.scale(desiredVelocity, desiredVelocity, MOVE_SPEED);
+    if (ENABLE_FLYING_MODE) {
+      vec3.scale(desiredVelocity, desiredVelocity, FLYING_SPEED);
+    } else {
+      vec3.scale(desiredVelocity, desiredVelocity, MOVE_SPEED);
+    }
   }
 
   return desiredVelocity;
