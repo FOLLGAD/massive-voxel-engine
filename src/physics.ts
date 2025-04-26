@@ -122,13 +122,11 @@ function getVoxelAt(
   worldZ: number,
   loadedChunkData: Map<string, Uint8Array>
 ): number {
-  const {
-    x: chunkX,
-    y: chunkY,
-    z: chunkZ,
-  } = getChunkOfPosition(vec3.fromValues(worldX, worldY, worldZ));
+  const chunkPosition = getChunkOfPosition(
+    vec3.fromValues(worldX, worldY, worldZ)
+  );
 
-  const key = getChunkKey({ x: chunkX, y: chunkY, z: chunkZ });
+  const key = getChunkKey(chunkPosition);
   const chunkData = loadedChunkData.get(key);
 
   if (!chunkData) {
@@ -141,20 +139,15 @@ function getVoxelAt(
     return 0; // Treat unloaded chunks as Air for safety
   }
 
-  const chunk = new Chunk(
-    {
-      x: chunkX,
-      y: chunkY,
-      z: chunkZ,
-    },
-    chunkData
+  const chunk = new Chunk(chunkPosition, chunkData);
+
+  const localPos = vec3.fromValues(
+    Math.floor(worldX) - chunk.position[0] * CHUNK_SIZE_X,
+    Math.floor(worldY) - chunk.position[1] * CHUNK_SIZE_Y,
+    Math.floor(worldZ) - chunk.position[2] * CHUNK_SIZE_Z
   );
 
-  const voxelX = Math.floor(worldX) - chunk.position.x * CHUNK_SIZE_X;
-  const voxelY = Math.floor(worldY) - chunk.position.y * CHUNK_SIZE_Y;
-  const voxelZ = Math.floor(worldZ) - chunk.position.z * CHUNK_SIZE_Z;
-
-  const voxel = chunk.getVoxel(voxelX, voxelY, voxelZ);
+  const voxel = chunk.getVoxel(localPos);
 
   return voxel;
 }

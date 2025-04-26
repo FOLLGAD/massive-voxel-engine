@@ -1,4 +1,4 @@
-import type { vec3 } from "gl-matrix";
+import { vec3 } from "gl-matrix";
 import {
   CHUNK_SIZE_X,
   CHUNK_SIZE_Y,
@@ -10,12 +10,20 @@ import { getVoxelColor, isVoxelSolid } from "./common/voxel-types";
 import { ENABLE_GREEDY_MESHING } from "./config";
 import log from "./logger";
 
+export const getLocalPosition = (position: vec3) => {
+  return vec3.fromValues(
+    position[0] % CHUNK_SIZE_X,
+    position[1] % CHUNK_SIZE_Y,
+    position[2] % CHUNK_SIZE_Z
+  );
+};
+
 export const getChunkOfPosition = (position: vec3) => {
-  return {
-    x: Math.floor(position[0] / CHUNK_SIZE_X),
-    y: Math.floor(position[1] / CHUNK_SIZE_Y),
-    z: Math.floor(position[2] / CHUNK_SIZE_Z),
-  };
+  return vec3.fromValues(
+    Math.floor(position[0] / CHUNK_SIZE_X),
+    Math.floor(position[1] / CHUNK_SIZE_Y),
+    Math.floor(position[2] / CHUNK_SIZE_Z)
+  );
 };
 
 const CUBE_FACES = {
@@ -62,34 +70,31 @@ const FACE_NORMALS: { [key: string]: [number, number, number] } = {
 };
 
 export class Chunk {
-  position: { x: number; y: number; z: number };
+  position: vec3;
   data: Uint8Array;
 
-  constructor(
-    position: { x: number; y: number; z: number },
-    data?: Uint8Array
-  ) {
+  constructor(position: vec3, data?: Uint8Array) {
     this.position = position;
     this.data = data ?? new Uint8Array(new SharedArrayBuffer(CHUNK_VOLUME));
   }
 
-  static withData(
-    position: { x: number; y: number; z: number },
-    data: Uint8Array
-  ): Chunk {
+  static withData(position: vec3, data: Uint8Array): Chunk {
     const chunk = new Chunk(position, data);
     return chunk;
   }
 
-  getVoxel(x: number, y: number, z: number): VoxelType {
-    const index = x + y * CHUNK_SIZE_X + z * CHUNK_SIZE_X * CHUNK_SIZE_Y;
+  getVoxel(localPos: vec3): VoxelType {
+    const index =
+      localPos[0] +
+      localPos[1] * CHUNK_SIZE_X +
+      localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y;
     if (
-      x < 0 ||
-      x >= CHUNK_SIZE_X ||
-      y < 0 ||
-      y >= CHUNK_SIZE_Y ||
-      z < 0 ||
-      z >= CHUNK_SIZE_Z
+      localPos[0] < 0 ||
+      localPos[0] >= CHUNK_SIZE_X ||
+      localPos[1] < 0 ||
+      localPos[1] >= CHUNK_SIZE_Y ||
+      localPos[2] < 0 ||
+      localPos[2] >= CHUNK_SIZE_Z
     ) {
       log.warn(
         "Chunk",
@@ -103,18 +108,21 @@ export class Chunk {
     return this.data![index];
   }
 
-  setVoxel(x: number, y: number, z: number, type: VoxelType): void {
+  setVoxel(localPos: vec3, type: VoxelType): void {
     if (
-      x < 0 ||
-      x >= CHUNK_SIZE_X ||
-      y < 0 ||
-      y >= CHUNK_SIZE_Y ||
-      z < 0 ||
-      z >= CHUNK_SIZE_Z
+      localPos[0] < 0 ||
+      localPos[0] >= CHUNK_SIZE_X ||
+      localPos[1] < 0 ||
+      localPos[1] >= CHUNK_SIZE_Y ||
+      localPos[2] < 0 ||
+      localPos[2] >= CHUNK_SIZE_Z
     ) {
       return;
     }
-    const index = x + y * CHUNK_SIZE_X + z * CHUNK_SIZE_X * CHUNK_SIZE_Y;
+    const index =
+      localPos[0] +
+      localPos[1] * CHUNK_SIZE_X +
+      localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y;
     // biome-ignore lint/style/noNonNullAssertion: <explanation>
     this.data![index] = type;
   }
@@ -128,14 +136,15 @@ export class Chunk {
     let baseVertexIndexOffset = 0;
 
     // Calculate world offset for this chunk
-    const offsetX = this.position.x * CHUNK_SIZE_X;
-    const offsetY = this.position.y * CHUNK_SIZE_Y;
-    const offsetZ = this.position.z * CHUNK_SIZE_Z;
+    const offsetX = this.position[0] * CHUNK_SIZE_X;
+    const offsetY = this.position[1] * CHUNK_SIZE_Y;
+    const offsetZ = this.position[2] * CHUNK_SIZE_Z;
 
     for (let z = 0; z < CHUNK_SIZE_Z; z++) {
       for (let y = 0; y < CHUNK_SIZE_Y; y++) {
         for (let x = 0; x < CHUNK_SIZE_X; x++) {
-          const voxelType = this.getVoxel(x, y, z);
+          const localPos = vec3.fromValues(x, y, z);
+          const voxelType = this.getVoxel(localPos);
           if (!isVoxelSolid(voxelType)) {
             continue; // Skip air blocks
           }
@@ -144,12 +153,12 @@ export class Chunk {
 
           // Check neighbours
           const neighbors = {
-            right: this.getVoxel(x + 1, y, z),
-            left: this.getVoxel(x - 1, y, z),
-            top: this.getVoxel(x, y + 1, z),
-            bottom: this.getVoxel(x, y - 1, z),
-            front: this.getVoxel(x, y, z + 1),
-            back: this.getVoxel(x, y, z - 1),
+            right: this.getVoxel(vec3.fromValues(x + 1, y, z)),
+            left: this.getVoxel(vec3.fromValues(x - 1, y, z)),
+            top: this.getVoxel(vec3.fromValues(x, y + 1, z)),
+            bottom: this.getVoxel(vec3.fromValues(x, y - 1, z)),
+            front: this.getVoxel(vec3.fromValues(x, y, z + 1)),
+            back: this.getVoxel(vec3.fromValues(x, y, z - 1)),
           };
 
           // Add faces if neighbor is air/transparent
@@ -207,16 +216,16 @@ export class Chunk {
     const dims = [CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z];
 
     // Calculate world offset for this chunk
-    const offsetX = this.position.x * CHUNK_SIZE_X;
-    const offsetY = this.position.y * CHUNK_SIZE_Y;
-    const offsetZ = this.position.z * CHUNK_SIZE_Z;
+    const offsetX = this.position[0] * CHUNK_SIZE_X;
+    const offsetY = this.position[1] * CHUNK_SIZE_Y;
+    const offsetZ = this.position[2] * CHUNK_SIZE_Z;
 
     // Sweep over the 3 dimensions (X, Y, Z)
     for (let dimension = 0; dimension < 3; dimension++) {
       const u = (dimension + 1) % 3; // Dimension 1 of the slice plane
       const v = (dimension + 2) % 3; // Dimension 2 of the slice plane
 
-      const x: number[] = [0, 0, 0]; // Current voxel position during sweep
+      const x = vec3.fromValues(0, 0, 0); // Current voxel position during sweep
       const mask = new Int8Array(dims[u] * dims[v]); // 2D mask for the slice plane
 
       // Sweep through slices along dimension 'd'
@@ -226,14 +235,10 @@ export class Chunk {
         // Generate mask for the current slice plane (u, v)
         for (x[v] = 0; x[v] < dims[v]; ++x[v]) {
           for (x[u] = 0; x[u] < dims[u]; ++x[u]) {
-            const type1 = this.getVoxel(x[0], x[1], x[2]);
-            const x_neighbor = [...x];
+            const type1 = this.getVoxel(x);
+            const x_neighbor = vec3.clone(x);
             x_neighbor[dimension]++;
-            const type2 = this.getVoxel(
-              x_neighbor[0],
-              x_neighbor[1],
-              x_neighbor[2]
-            );
+            const type2 = this.getVoxel(x_neighbor);
             const solid1 = isVoxelSolid(type1);
             const solid2 = isVoxelSolid(type2);
 
@@ -405,13 +410,13 @@ export class Chunk {
 }
 
 export interface ChunkMesh {
-  position: { x: number; y: number; z: number };
+  position: vec3;
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
   indexCount: number;
   aabb: { min: vec3; max: vec3 }; // Add AABB for frustum culling
 }
 
-export function getChunkKey(pos: { x: number; y: number; z: number }): string {
-  return `${pos.x},${pos.y},${pos.z}`;
+export function getChunkKey(pos: vec3): string {
+  return `${pos[0]},${pos[1]},${pos[2]}`;
 }

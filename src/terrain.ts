@@ -1,3 +1,4 @@
+import { vec3 } from "gl-matrix";
 import { Chunk } from "./chunk";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
 import { VoxelType } from "./common/voxel-types";
@@ -131,7 +132,7 @@ export class Terrain {
     return mag < 0.2;
   }
 
-  generateTerrain(position: { x: number; y: number; z: number }) {
+  generateTerrain(position: vec3) {
     const chunk = new Chunk(position);
     const stoneDepth = 4; // How deep stone layer goes below dirt/grass
     const terrainScale = 0.001;
@@ -142,8 +143,8 @@ export class Terrain {
     const baseHeight = 10;
 
     // Calculate world offset for noise input
-    const worldOffsetX = chunk.position.x * CHUNK_SIZE_X;
-    const worldOffsetZ = chunk.position.z * CHUNK_SIZE_Z;
+    const worldOffsetX = chunk.position[0] * CHUNK_SIZE_X;
+    const worldOffsetZ = chunk.position[2] * CHUNK_SIZE_Z;
 
     for (let x = 0; x < CHUNK_SIZE_X; x++) {
       for (let z = 0; z < CHUNK_SIZE_Z; z++) {
@@ -172,26 +173,26 @@ export class Terrain {
         const height = Math.floor(baseHeight + heightVariation);
         // --- End Height Calculation ---
 
-        const chunkBaseY = chunk.position.y * CHUNK_SIZE_Y;
+        const chunkBaseY = chunk.position[1] * CHUNK_SIZE_Y;
 
         for (let y = 0; y < CHUNK_SIZE_Y; y++) {
           const worldY = chunkBaseY + y; // Voxel's world Y position
 
           // --- Basic Terrain Placement ---
           if (worldY > height) {
-            chunk.setVoxel(x, y, z, VoxelType.AIR);
+            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
           } else if (worldY === height) {
-            chunk.setVoxel(x, y, z, VoxelType.GRASS);
+            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.GRASS);
           } else if (worldY > height - stoneDepth) {
-            chunk.setVoxel(x, y, z, VoxelType.DIRT);
+            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.DIRT);
           } else {
-            chunk.setVoxel(x, y, z, VoxelType.STONE);
+            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STONE);
           }
 
           // --- Cave Carving (only affects blocks below surface) ---
           if (worldY <= height) {
             if (this.tunnelCaves(worldX, worldY, worldZ)) {
-              chunk.setVoxel(x, y, z, VoxelType.AIR);
+              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
             }
           }
         }
@@ -199,7 +200,7 @@ export class Terrain {
     }
     log(
       "Terrain",
-      `Perlin terrain generation complete for chunk ${chunk.position.x},${chunk.position.y},${chunk.position.z}`
+      `Perlin terrain generation complete for chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]}`
     );
 
     // Add a 10% chance to spawn a floating stone block (Keep chunk?)
@@ -207,10 +208,10 @@ export class Terrain {
       const stoneX = Math.floor(Math.random() * CHUNK_SIZE_X);
       const stoneY = Math.floor(Math.random() * CHUNK_SIZE_Y);
       const stoneZ = Math.floor(Math.random() * CHUNK_SIZE_Z);
-      chunk.setVoxel(stoneX, stoneY, stoneZ, VoxelType.STONE);
+      chunk.setVoxel(vec3.fromValues(stoneX, stoneY, stoneZ), VoxelType.STONE);
       log(
         "Terrain",
-        `[Debug] Added random stone block at ${stoneX},${stoneY},${stoneZ} in chunk ${chunk.position.x},${chunk.position.y},${chunk.position.z}`
+        `[Debug] Added random stone block at ${stoneX},${stoneY},${stoneZ} in chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]}`
       );
     }
 

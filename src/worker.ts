@@ -4,6 +4,7 @@ import { ENABLE_GREEDY_MESHING } from "./config";
 import { Terrain } from "./terrain";
 import log from "./logger";
 import { Chunk } from "./chunk";
+import { vec3 } from "gl-matrix";
 
 log("Worker", "Worker script loaded.");
 
@@ -11,7 +12,11 @@ const terrain = new Terrain();
 
 // --- Worker Message Handling ---
 self.onmessage = (event: MessageEvent) => {
-  const { type, position } = event.data;
+  const { type, position: _position } = event.data as {
+    type: string;
+    position: vec3;
+  };
+  const position = vec3.fromValues(_position[0], _position[1], _position[2]);
   if (type === "requestChunk") {
     log(
       "Worker",
