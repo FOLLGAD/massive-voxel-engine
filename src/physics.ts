@@ -1,7 +1,7 @@
 import { vec3 } from "gl-matrix";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
 import log from "./logger";
-import { Chunk, getChunkKey } from "./chunk";
+import { Chunk, getChunkKey, getChunkOfPosition } from "./chunk";
 import { FLYING_SPEED } from "./config";
 import type { KeyboardState } from "./keyboard";
 
@@ -14,7 +14,7 @@ export const PLAYER_WIDTH = 0.8; // Includes depth
 export const MOVE_SPEED = 5.0; // Units per second
 export const PLAYER_HALF_WIDTH = PLAYER_WIDTH / 2;
 const COLLISION_EPSILON = 1e-6;
-const PLAYER_EYE_LEVEL = 1.6;
+export const PLAYER_EYE_LEVEL = 1.6;
 
 export interface AABB {
   min: vec3;
@@ -122,9 +122,11 @@ function getVoxelAt(
   worldZ: number,
   loadedChunkData: Map<string, Uint8Array>
 ): number {
-  const chunkX = Math.floor(worldX / CHUNK_SIZE_X);
-  const chunkY = Math.floor(worldY / CHUNK_SIZE_Y);
-  const chunkZ = Math.floor(worldZ / CHUNK_SIZE_Z);
+  const {
+    x: chunkX,
+    y: chunkY,
+    z: chunkZ,
+  } = getChunkOfPosition(vec3.fromValues(worldX, worldY, worldZ));
 
   const key = getChunkKey({ x: chunkX, y: chunkY, z: chunkZ });
   const chunkData = loadedChunkData.get(key);
@@ -139,7 +141,7 @@ function getVoxelAt(
     return 0; // Treat unloaded chunks as Air for safety
   }
 
-  const chunk = Chunk.withData(
+  const chunk = new Chunk(
     {
       x: chunkX,
       y: chunkY,

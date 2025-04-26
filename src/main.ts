@@ -14,11 +14,17 @@ import {
 } from "./common/constants";
 import { PlayerState, updatePhysics } from "./physics"; // Import physics
 import { Renderer } from "./renderer"; // Import renderer
-import { getChunkKey, type ChunkMesh } from "./chunk";
+import {
+  Chunk,
+  getChunkKey,
+  getChunkOfPosition,
+  type ChunkMesh,
+} from "./chunk";
 import log from "./logger";
 import { KeyboardState } from "./keyboard";
+import { VoxelType } from "./common/voxel-types";
 
-const DEBUG_MODE = false;
+const DEBUG_MODE = true;
 
 log("Main", "Main script loaded.");
 
@@ -69,22 +75,18 @@ async function main() {
   // capture mouse movement
   document.addEventListener("pointerlockchange", () => {
     if (document.pointerLockElement === canvas) {
-      console.log("The pointer lock status is now locked");
       document.addEventListener("mousemove", updatePosition, false);
     } else {
-      console.log("The pointer lock status is now unlocked");
       document.removeEventListener("mousemove", updatePosition, false);
     }
   });
 
   window.addEventListener("keydown", (e) => {
-    console.log("keydown", e.code);
     if (e.repeat) return;
     keyboardState.pressedKeys.add(e.code);
     keyboardState.downKeys.add(e.code);
   });
   window.addEventListener("keyup", (e) => {
-    console.log("keyup", e.code);
     keyboardState.downKeys.delete(e.code);
   });
   window.addEventListener("mousedown", () => {
@@ -114,6 +116,11 @@ async function main() {
   let nextWorkerIndex = 0;
   log("Main", `${numWorkers} Workers initialized`);
 
+  const bufferMaps = {
+    vertex: new Map<string, GPUBuffer>(),
+    index: new Map<string, GPUBuffer>(),
+  };
+
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
     const type = event.data.type;
@@ -129,12 +136,14 @@ async function main() {
       const vertices = new Float32Array(verticesBuffer);
       const indices = new Uint32Array(indicesBuffer);
       try {
+        const key = getChunkKey(position);
         const vertexBuffer = rendererState.device.createBuffer({
           label: `chunk-${position.x}-${position.y}-${position.z}-vertex`,
           size: vertices.byteLength,
           usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
         });
         rendererState.device.queue.writeBuffer(vertexBuffer, 0, vertices);
+        bufferMaps.vertex.set(key, vertexBuffer);
 
         const indexBuffer = rendererState.device.createBuffer({
           label: `chunk-${position.x}-${position.y}-${position.z}-index`,
@@ -142,8 +151,7 @@ async function main() {
           usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
         });
         rendererState.device.queue.writeBuffer(indexBuffer, 0, indices);
-
-        const key = getChunkKey(position);
+        bufferMaps.index.set(key, indexBuffer);
 
         // Calculate AABB in world coordinates
         const minX = position.x * CHUNK_SIZE_X;
@@ -210,9 +218,6 @@ async function main() {
     eyePosition[1] += 1.7; // Approximate eye height
 
     const currentPos = vec3.clone(eyePosition);
-    let hitBlock: { x: number; y: number; z: number; face: number } | null =
-      null;
-    let hitFace: number | null = null;
     const lastPos = vec3.clone(currentPos);
 
     // Step along the ray
@@ -225,10 +230,16 @@ async function main() {
       const blockZ = Math.floor(currentPos[2]);
 
       // Get chunk key for this block
-      const chunkX = Math.floor(blockX / CHUNK_SIZE_X);
-      const chunkY = Math.floor(blockY / CHUNK_SIZE_Y);
-      const chunkZ = Math.floor(blockZ / CHUNK_SIZE_Z);
-      const chunkKey = `${chunkX},${chunkY},${chunkZ}`;
+      const {
+        x: blockChunkX,
+        y: blockChunkY,
+        z: blockChunkZ,
+      } = getChunkOfPosition(vec3.fromValues(blockX, blockY, blockZ));
+      const chunkKey = getChunkKey({
+        x: blockChunkX,
+        y: blockChunkY,
+        z: blockChunkZ,
+      });
 
       // Check if chunk is loaded
       const chunkData = loadedChunkData.get(chunkKey);
@@ -254,6 +265,7 @@ async function main() {
         const absDy = Math.abs(dy);
         const absDz = Math.abs(dz);
 
+        let hitFace: number | null = null;
         if (absDx >= absDy && absDx >= absDz) {
           hitFace = dx > 0 ? 0 : 1; // +X or -X face
         } else if (absDy >= absDx && absDy >= absDz) {
@@ -262,14 +274,18 @@ async function main() {
           hitFace = dz > 0 ? 4 : 5; // +Z or -Z face
         }
 
-        hitBlock = { x: blockX, y: blockY, z: blockZ, face: hitFace };
-        break;
+        return {
+          block: { x: blockX, y: blockY, z: blockZ },
+          voxelIndex: voxelIndex,
+          face: hitFace,
+          chunkKey: chunkKey,
+        };
       }
 
       vec3.copy(lastPos, currentPos);
     }
 
-    return hitBlock;
+    return null;
   };
 
   const physicsStep = (deltaTimeMs: number) => {
@@ -282,16 +298,70 @@ async function main() {
       loadedChunkData
     );
 
-    if (keyboardState.mouseClicked) {
-      const blockLookedAt = getBlockLookedAt(playerState.position, cameraYaw);
-      if (blockLookedAt) {
-        log(
-          "Main",
-          `Block looked at: ${blockLookedAt.x}, ${blockLookedAt.y}, ${blockLookedAt.z}, ${blockLookedAt.face}`
-        );
-      } else {
-        log("Main", "No block looked at");
-      }
+    if (keyboardState.pressedKeys.has("KeyC")) {
+      debugCameraEnabled = !debugCameraEnabled;
+    }
+    if (keyboardState.downKeys.has("KeyH")) {
+      fov += 0.01;
+    }
+    if (keyboardState.downKeys.has("KeyL")) {
+      fov -= 0.01;
+    }
+
+    if (keyboardState.mouseClicked && blockLookedAt) {
+      const { block, chunkKey } = blockLookedAt;
+      const chunkData = loadedChunkData.get(chunkKey);
+      if (!chunkData) return;
+      const chunk = new Chunk(
+        getChunkOfPosition(vec3.fromValues(block.x, block.y, block.z)),
+        chunkData
+      );
+      const localX = ((block.x % CHUNK_SIZE_X) + CHUNK_SIZE_X) % CHUNK_SIZE_X;
+      const localY = ((block.y % CHUNK_SIZE_Y) + CHUNK_SIZE_Y) % CHUNK_SIZE_Y;
+      const localZ = ((block.z % CHUNK_SIZE_Z) + CHUNK_SIZE_Z) % CHUNK_SIZE_Z;
+      chunk.setVoxel(localX, localY, localZ, VoxelType.AIR);
+      loadedChunkData.set(chunkKey, chunk.data);
+
+      console.log("POSITION", chunk.position, chunkKey);
+      // Update the chunk mesh
+      const key = getChunkKey(chunk.position);
+      const oldChunkMesh = chunkMeshes.get(key);
+
+      if (!oldChunkMesh) throw new Error("Chunk mesh not found");
+      if (!rendererState) throw new Error("Renderer not found");
+
+      // Destroy the old GPU buffers before creating new ones
+      oldChunkMesh.vertexBuffer.destroy();
+      oldChunkMesh.indexBuffer.destroy();
+
+      const newChunkMesh = chunk.generateMesh();
+
+      // Create new vertex buffer
+      const newVertexBuffer = rendererState.device.createBuffer({
+        label: `chunk-${chunk.position.x}-${chunk.position.y}-${chunk.position.z}-vertex-updated`,
+        size: newChunkMesh.vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      rendererState.device.queue.writeBuffer(
+        newVertexBuffer,
+        0,
+        newChunkMesh.vertices
+      );
+
+      // Create new index buffer
+      const newIndexBuffer = rendererState.device.createBuffer({
+        label: `chunk-${chunk.position.x}-${chunk.position.y}-${chunk.position.z}-index-updated`,
+        size: newChunkMesh.indices.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      rendererState.device.queue.writeBuffer(
+        newIndexBuffer,
+        0,
+        newChunkMesh.indices
+      );
+      oldChunkMesh.vertexBuffer = newVertexBuffer;
+      oldChunkMesh.indexBuffer = newIndexBuffer;
+      oldChunkMesh.indexCount = newChunkMesh.indices.length;
     }
 
     keyboardState.pressedKeys.clear();
@@ -299,9 +369,11 @@ async function main() {
   };
 
   const unloadChunks = () => {
-    const playerChunkX = Math.floor(playerState.position[0] / CHUNK_SIZE_X);
-    const playerChunkY = Math.floor(playerState.position[1] / CHUNK_SIZE_Y);
-    const playerChunkZ = Math.floor(playerState.position[2] / CHUNK_SIZE_Z);
+    const {
+      x: playerChunkX,
+      y: playerChunkY,
+      z: playerChunkZ,
+    } = getChunkOfPosition(playerState.position);
 
     for (const [key, chunkMesh] of chunkMeshes.entries()) {
       const { x, y, z } = chunkMesh.position;
@@ -315,6 +387,7 @@ async function main() {
       ) {
         log("Main", `Unloading chunk: ${key}`);
         chunkMeshes.delete(key);
+        loadedChunkData.delete(key);
         requestedChunkKeys.delete(key);
       }
     }
@@ -330,6 +403,14 @@ async function main() {
 
   unloadChunks();
 
+  let debugCameraEnabled = false;
+  let fov = Math.PI / 4;
+  let blockLookedAt: {
+    block: { x: number; y: number; z: number };
+    voxelIndex: number;
+    face: number;
+    chunkKey: string;
+  } | null = null;
   // --- Game Loop Function ---
   let lastTotalTriangles = 0;
   function frame(deltaTime: number) {
@@ -346,21 +427,41 @@ async function main() {
       playerState.position[2]
     );
 
+    blockLookedAt = getBlockLookedAt(playerState.position, cameraYaw);
+    const highlightedBlockPositions: vec3[] = [];
+    if (blockLookedAt?.block) {
+      highlightedBlockPositions.push(
+        vec3.fromValues(
+          blockLookedAt.block.x,
+          blockLookedAt.block.y,
+          blockLookedAt.block.z
+        )
+      );
+    }
+
     // --- Rendering ---
     const renderResult = rendererState.renderFrame(
       playerState.getCameraPosition(),
       cameraPitch,
       cameraYaw,
       chunkMeshes,
-      debugCameraPosition,
-      debugCameraTarget,
+      highlightedBlockPositions,
+      fov,
+      debugCameraEnabled
+        ? {
+            position: debugCameraPosition,
+            target: debugCameraTarget,
+          }
+        : undefined,
       DEBUG_MODE
     );
     lastTotalTriangles = renderResult.totalTriangles;
 
-    const playerChunkX = Math.floor(playerState.position[0] / CHUNK_SIZE_X);
-    const playerChunkY = Math.floor(playerState.position[1] / CHUNK_SIZE_Y);
-    const playerChunkZ = Math.floor(playerState.position[2] / CHUNK_SIZE_Z);
+    const {
+      x: playerChunkX,
+      y: playerChunkY,
+      z: playerChunkZ,
+    } = getChunkOfPosition(playerState.position);
 
     for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
       for (

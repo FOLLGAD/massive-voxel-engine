@@ -10,6 +10,14 @@ import { getVoxelColor, isVoxelSolid } from "./common/voxel-types";
 import { ENABLE_GREEDY_MESHING } from "./config";
 import log from "./logger";
 
+export const getChunkOfPosition = (position: vec3) => {
+  return {
+    x: Math.floor(position[0] / CHUNK_SIZE_X),
+    y: Math.floor(position[1] / CHUNK_SIZE_Y),
+    z: Math.floor(position[2] / CHUNK_SIZE_Z),
+  };
+};
+
 const CUBE_FACES = {
   // +X (Right)
   right: [
@@ -57,17 +65,19 @@ export class Chunk {
   position: { x: number; y: number; z: number };
   data: Uint8Array;
 
-  constructor(position: { x: number; y: number; z: number }) {
+  constructor(
+    position: { x: number; y: number; z: number },
+    data?: Uint8Array
+  ) {
     this.position = position;
-    this.data = new Uint8Array(CHUNK_VOLUME);
+    this.data = data ?? new Uint8Array(CHUNK_VOLUME);
   }
 
   static withData(
     position: { x: number; y: number; z: number },
     data: Uint8Array
   ): Chunk {
-    const chunk = new Chunk(position);
-    chunk.data = data;
+    const chunk = new Chunk(position, data);
     return chunk;
   }
 
@@ -89,7 +99,8 @@ export class Chunk {
       );
       return VoxelType.AIR;
     }
-    return this.data[index];
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    return this.data![index];
   }
 
   setVoxel(x: number, y: number, z: number, type: VoxelType): void {
@@ -104,7 +115,8 @@ export class Chunk {
       return;
     }
     const index = x + y * CHUNK_SIZE_X + z * CHUNK_SIZE_X * CHUNK_SIZE_Y;
-    this.data[index] = type;
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    this.data![index] = type;
   }
 
   // --- Naive Meshing Implementation (with color and normals) ---

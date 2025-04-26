@@ -1,6 +1,7 @@
 import { mat4, vec3, vec4 } from "gl-matrix";
 import type { ChunkMesh } from "./chunk";
 import { drawDebugLines, generateDebugLineVertices } from "./renderer.debug";
+import { extractFrustumPlanes } from "./renderer.util";
 
 // --- Constants ---
 const FRUSTUM_CULLING_EPSILON = 1e-5;
@@ -8,15 +9,18 @@ export const DEBUG_COLOR_CULLED = [1, 0, 0]; // Red
 export const DEBUG_COLOR_DRAWN = [0, 1, 0]; // Green
 export const DEBUG_COLOR_FRUSTUM = [0.8, 0.8, 0]; // Yellow
 export const DEBUG_COLOR_PLAYER = [0, 0.8, 0.8]; // Cyan
-const INITIAL_DEBUG_LINE_BUFFER_SIZE = 1024 * 6 * 4 * 10; // ~1k lines
+const INITIAL_DEBUG_LINE_BUFFER_SIZE = 1024 * 6 * 4 * 10 * 20; // ~20k lines
+const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initially
+const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
 
 // @ts-ignore
 import voxelShaderCode from "./shaders/voxel.wsgl" with { type: "text" };
 // @ts-ignore
 import lineShaderCode from "./shaders/line.wsgl" with { type: "text" };
 // @ts-ignore
+import highlightShaderCode from "./shaders/highlight.wsgl" with { type: "text" };
+// @ts-ignore
 import cullChunksShader from "./shaders/cullChunks.wsgl" with { type: "text" };
-import { extractFrustumPlanes } from "./renderer.util";
 
 // --- Frustum Culling Types ---
 /** Represents a plane equation: Ax + By + Cz + D = 0 */
@@ -29,11 +33,14 @@ export class Renderer {
   public presentationFormat: GPUTextureFormat;
   public voxelPipeline: GPURenderPipeline;
   public linePipeline: GPURenderPipeline;
+  public highlightPipeline: GPURenderPipeline;
   public uniformBuffer: GPUBuffer;
   public bindGroup: GPUBindGroup;
   public depthTexture: GPUTexture;
   public debugLineBuffer: GPUBuffer;
   public debugLineBufferSize: number;
+  public highlightVertexBuffer: GPUBuffer;
+  public highlightVertexBufferSize: number;
   public viewMatrix: mat4;
   public projectionMatrix: mat4;
   public vpMatrix: mat4;
@@ -55,21 +62,27 @@ export class Renderer {
     presentationFormat: GPUTextureFormat,
     voxelPipeline: GPURenderPipeline,
     linePipeline: GPURenderPipeline,
+    highlightPipeline: GPURenderPipeline,
     uniformBuffer: GPUBuffer,
     bindGroup: GPUBindGroup,
     debugLineBuffer: GPUBuffer,
-    debugLineBufferSize: number
+    debugLineBufferSize: number,
+    highlightVertexBuffer: GPUBuffer,
+    highlightVertexBufferSize: number
   ) {
     this.device = device;
     this.context = context;
     this.presentationFormat = presentationFormat;
     this.voxelPipeline = voxelPipeline;
     this.linePipeline = linePipeline;
+    this.highlightPipeline = highlightPipeline;
     this.uniformBuffer = uniformBuffer;
     this.bindGroup = bindGroup;
 
     this.debugLineBuffer = debugLineBuffer;
     this.debugLineBufferSize = debugLineBufferSize;
+    this.highlightVertexBuffer = highlightVertexBuffer;
+    this.highlightVertexBufferSize = highlightVertexBufferSize;
 
     // Matrices
     this.viewMatrix = mat4.create();
@@ -150,11 +163,23 @@ export class Renderer {
       presentationFormat,
       pipelineLayout
     );
+    const highlightPipeline = Renderer.createHighlightPipeline(
+      device,
+      presentationFormat,
+      pipelineLayout
+    );
 
     // --- Debug Line Buffer ---
     const debugLineBuffer = device.createBuffer({
       label: "Debug Line Buffer",
       size: INITIAL_DEBUG_LINE_BUFFER_SIZE,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+
+    // --- Highlight Vertex Buffer ---
+    const highlightVertexBuffer = device.createBuffer({
+      label: "Highlight Vertex Buffer",
+      size: INITIAL_HIGHLIGHT_BUFFER_SIZE,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
 
@@ -164,10 +189,13 @@ export class Renderer {
       presentationFormat,
       voxelPipeline,
       linePipeline,
+      highlightPipeline,
       uniformBuffer,
       bindGroup,
       debugLineBuffer,
-      INITIAL_DEBUG_LINE_BUFFER_SIZE
+      INITIAL_DEBUG_LINE_BUFFER_SIZE,
+      highlightVertexBuffer,
+      INITIAL_HIGHLIGHT_BUFFER_SIZE
     );
   }
 
@@ -250,6 +278,51 @@ export class Renderer {
       depthStencil: {
         depthWriteEnabled: true,
         depthCompare: "less",
+        format: "depth24plus",
+      },
+    });
+  }
+
+  private static createHighlightPipeline(
+    device: GPUDevice,
+    presentationFormat: GPUTextureFormat,
+    pipelineLayout: GPUPipelineLayout
+  ): GPURenderPipeline {
+    const highlightShaderModule = device.createShaderModule({
+      code: highlightShaderCode,
+    });
+
+    const highlightVertexBufferLayout: GPUVertexBufferLayout = {
+      arrayStride: 6 * Float32Array.BYTES_PER_ELEMENT, // 3 pos + 3 color
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" }, // Position
+        {
+          shaderLocation: 1,
+          offset: 3 * Float32Array.BYTES_PER_ELEMENT,
+          format: "float32x3",
+        }, // Color
+      ],
+    };
+
+    return device.createRenderPipeline({
+      label: "Highlight Render Pipeline",
+      layout: pipelineLayout,
+      vertex: {
+        module: highlightShaderModule,
+        entryPoint: "vs_main",
+        buffers: [highlightVertexBufferLayout],
+      },
+      fragment: {
+        module: highlightShaderModule,
+        entryPoint: "fs_main",
+        targets: [{ format: presentationFormat }],
+      },
+      primitive: {
+        topology: "line-list", // Use line-list for wireframe
+      },
+      depthStencil: {
+        depthWriteEnabled: false, // Don't write to depth buffer
+        depthCompare: "less", // TEMPORARY: Rule out depth issues
         format: "depth24plus",
       },
     });
@@ -364,8 +437,12 @@ export class Renderer {
     cameraPitch: number,
     cameraYaw: number,
     chunkMeshes: Map<string, ChunkMesh>,
-    debugCameraPosition: vec3,
-    debugCameraTarget: vec3,
+    highlightedBlockPositions: vec3[],
+    fov: number,
+    debugCamera?: {
+      position: vec3,
+      target: vec3
+    },
     enableDebugView = true
   ): { totalTriangles: number; drawnChunks: number } {
 
@@ -374,7 +451,7 @@ export class Renderer {
 
     // Calculate main camera matrices
     Renderer.updateViewMatrix(this.viewMatrix, cameraPosition, cameraPitch, cameraYaw);
-    mat4.perspective(this.projectionMatrix, Math.PI / 4, aspect, 0.1, 1000.0);
+    mat4.perspective(this.projectionMatrix, fov, aspect, 0.1, 1000.0);
     mat4.multiply(this.vpMatrix, this.projectionMatrix, this.viewMatrix);
 
     // Calculate inverse main VP for frustum corners
@@ -382,11 +459,11 @@ export class Renderer {
     let worldFrustumCorners: vec3[] = [];
 
     // Calculate debug camera matrices
-    if (enableDebugView) {
+    if (debugCamera) {
       mat4.lookAt(
         this.viewMatrixDebug,
-        debugCameraPosition,
-        debugCameraTarget,
+        debugCamera.position,
+        debugCamera.target,
         vec3.fromValues(0, 1, 0)
       );
       mat4.copy(this.projectionMatrixDebug, this.projectionMatrix);
@@ -430,6 +507,25 @@ export class Renderer {
     this.debugInfo.culledChunks = sceneStats.culledChunks;
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
 
+    // --- Prepare Highlight Data ---
+    let totalHighlightVertices = 0;
+    if (highlightedBlockPositions.length > 0) {
+        const numberOfHighlightedCubes = highlightedBlockPositions.length;
+        const highlightVertexData = this.generateHighlightVertices(highlightedBlockPositions);
+        totalHighlightVertices = numberOfHighlightedCubes * 24; // 24 vertices per cube
+
+        if (highlightVertexData.byteLength > this.highlightVertexBufferSize) {
+            this.highlightVertexBuffer.destroy();
+            this.highlightVertexBufferSize = Math.max(this.highlightVertexBufferSize * 2, highlightVertexData.byteLength);
+            this.highlightVertexBuffer = this.device.createBuffer({
+                label: "Highlight Vertex Buffer (Resized)",
+                size: this.highlightVertexBufferSize,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            });
+            console.warn("Resized highlight vertex buffer to:", this.highlightVertexBufferSize);
+        }
+        this.device.queue.writeBuffer(this.highlightVertexBuffer, 0, highlightVertexData);
+    }
 
     // --- Draw Debug Info ---
     let lineData: Float32Array | null = null;
@@ -457,14 +553,22 @@ export class Renderer {
       }
       this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData);
 
-      // Write the DEBUG camera matrix JUST before drawing lines
-      this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
-
       drawDebugLines(passEncoder, this, lineData);
 
+      // --- Draw Highlights (using DEBUG camera for now) ---
+      if (totalHighlightVertices > 0) {
+          passEncoder.setPipeline(this.highlightPipeline);
+          passEncoder.setBindGroup(0, this.bindGroup); // Still needs the VP matrix
+          passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
+          passEncoder.draw(totalHighlightVertices, 1, 0, 0); // Draw all generated vertices
+      }
+
+      // Restore MAIN camera matrix if we were in debug view
+    } 
+    if (debugCamera) {
+      this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
+    } else {
       this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array);
-    } else if (enableDebugView) {
-         this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
     }
 
 
@@ -518,5 +622,52 @@ export class Renderer {
 
      public getDebugLineBufferSize(): number {
         return this.debugLineBufferSize;
+    }
+
+    // Added helper to generate wireframe cube vertices
+    private generateHighlightVertices(positions: vec3[]): Float32Array {
+        const verticesPerCube = 24; // 12 lines * 2 vertices per line
+        const floatsPerVertex = 6; // 3 pos, 3 color
+        const data = new Float32Array(positions.length * verticesPerCube * floatsPerVertex);
+        let offset = 0;
+
+        const cubeEdges = [
+            [0, 0, 0], [1, 0, 0], // Bottom face
+            [1, 0, 0], [1, 0, 1],
+            [1, 0, 1], [0, 0, 1],
+            [0, 0, 1], [0, 0, 0],
+            [0, 1, 0], [1, 1, 0], // Top face
+            [1, 1, 0], [1, 1, 1],
+            [1, 1, 1], [0, 1, 1],
+            [0, 1, 1], [0, 1, 0],
+            [0, 0, 0], [0, 1, 0], // Connecting edges
+            [1, 0, 0], [1, 1, 0],
+            [1, 0, 1], [1, 1, 1],
+            [0, 0, 1], [0, 1, 1],
+        ];
+
+        for (const pos of positions) {
+            for (let i = 0; i < cubeEdges.length; i += 2) {
+                const start = cubeEdges[i];
+                const end = cubeEdges[i+1];
+
+                // Start vertex
+                data[offset++] = pos[0] + start[0];
+                data[offset++] = pos[1] + start[1];
+                data[offset++] = pos[2] + start[2];
+                data[offset++] = HIGHLIGHT_COLOR[0];
+                data[offset++] = HIGHLIGHT_COLOR[1];
+                data[offset++] = HIGHLIGHT_COLOR[2];
+
+                // End vertex
+                data[offset++] = pos[0] + end[0];
+                data[offset++] = pos[1] + end[1];
+                data[offset++] = pos[2] + end[2];
+                data[offset++] = HIGHLIGHT_COLOR[0];
+                data[offset++] = HIGHLIGHT_COLOR[1];
+                data[offset++] = HIGHLIGHT_COLOR[2];
+            }
+        }
+        return data;
     }
 }
