@@ -4,14 +4,22 @@
 
 My experiments with making a voxel engine.
 
-Goals:
+Built on top of WebGPU.
+
+Currently generates terrain with extensive cave systems.
+
+## Goals
+
 - Cool terrain features
 - Highly performant – can run on any consumer laptop at 60fps
 - portals!!!
+-
 
 ## Todo
-- gpu culling + indirect drawing
+
+- culling on GPU + indirect drawing
+- occlusion culling (GPU)
 - geometry batching
 - play around with different rendering styles
-    - blue noise
-    - pixellation
+  - blue noise
+  - pixellation

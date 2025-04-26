@@ -1,1 +1,2 @@
-export const ENABLE_GREEDY_MESHING = true; // <<< SET TO true TO USE GREEDY MESHING
+export const ENABLE_GREEDY_MESHING = true;
+export const ENABLE_FLYING_MODE = false;

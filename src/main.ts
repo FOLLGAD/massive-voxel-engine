@@ -14,11 +14,7 @@ import {
   UNLOAD_BUFFER_Y,
 } from "./common/constants";
 import { PlayerState, updatePhysics } from "./physics"; // Import physics
-import {
-  type RendererState,
-  initializeRenderer,
-  renderFrame,
-} from "./renderer"; // Import renderer
+import { Renderer } from "./renderer"; // Import renderer
 import { getChunkKey, type ChunkMesh } from "./chunk";
 import log from "./logger";
 
@@ -31,7 +27,7 @@ const chunkMeshes = new Map<string, ChunkMesh>();
 const loadedChunkData = new Map<string, Uint8Array>();
 const requestedChunkKeys = new Set<string>();
 let playerState = new PlayerState();
-let rendererState: RendererState | null = null; // Will be initialized later
+let rendererState: Renderer | null = null; // Will be initialized later
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
@@ -98,7 +94,7 @@ async function main() {
 
   // --- Initialize Renderer ---
   try {
-    rendererState = await initializeRenderer(canvas);
+    rendererState = await Renderer.create(canvas);
     log("Main", "Renderer Initialized");
   } catch (error) {
     log("Main", "Failed to initialize renderer:", error);
@@ -256,9 +252,7 @@ async function main() {
     );
 
     // --- Rendering ---
-    const renderResult = renderFrame(
-      rendererState,
-      canvas,
+    const renderResult = rendererState.renderFrame(
       playerState.getCameraPosition(),
       cameraPitch,
       cameraYaw,
@@ -267,7 +261,6 @@ async function main() {
       debugCameraTarget,
       DEBUG_MODE
     );
-    rendererState.depthTexture = renderResult.updatedDepthTexture;
     lastTotalTriangles = renderResult.totalTriangles;
 
     const playerChunkX = Math.floor(playerState.position[0] / CHUNK_SIZE_X);
@@ -352,8 +345,7 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
   requestAnimationFrame(frame);
 
   window.addEventListener("resize", () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    rendererState?.resize(window.innerWidth, window.innerHeight);
   });
 }
 

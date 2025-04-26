@@ -2,21 +2,18 @@ import { vec3 } from "gl-matrix";
 import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
 import log from "./logger";
 import { Chunk, getChunkKey } from "./chunk";
+import { ENABLE_FLYING_MODE } from "./config";
 
 // --- Physics Constants ---
 export const GRAVITY = -16.0; // Units per second squared
 export const JUMP_VELOCITY = 7.0; // Initial upward velocity on jump
 export const MAX_STEP_HEIGHT = 0.75; // How high the player can step up automatically
-export const PLAYER_HEIGHT = 1.8;
-export const PLAYER_WIDTH = 0.6; // Includes depth
+export const PLAYER_HEIGHT = 1.87;
+export const PLAYER_WIDTH = 0.8; // Includes depth
 export const MOVE_SPEED = 5.0; // Units per second
-const PLAYER_HALF_WIDTH = PLAYER_WIDTH / 2;
-const COLLISION_EPSILON = 1e-6; // Small offset to prevent floating point issues
-const PLAYER_EYE_LEVEL = 1.87; // Eye level not directly needed for collision physics
-
-const FLYING_MODE = true;
-
-// --- AABB Structure and Helpers ---
+export const PLAYER_HALF_WIDTH = PLAYER_WIDTH / 2;
+const COLLISION_EPSILON = 1e-6;
+const PLAYER_EYE_LEVEL = 1.6;
 
 export interface AABB {
   min: vec3;
@@ -353,22 +350,19 @@ export function updatePhysics(
   );
 
   // 2. Apply Gravity
-  if (!FLYING_MODE) {
+  if (!ENABLE_FLYING_MODE) {
     applyGravity(velocity, deltaTimeSeconds);
-  }
 
-  if (FLYING_MODE) {
+    if (pressedKeys.has("Space")) {
+      isGrounded = handleJump(velocity, isGrounded);
+    }
+  } else {
     velocity[1] = 0;
     if (pressedKeys.has("Space")) {
       velocity[1] = JUMP_VELOCITY;
     }
     if (pressedKeys.has("ShiftLeft")) {
       velocity[1] = -JUMP_VELOCITY;
-    }
-  } else {
-    // 3. Handle Jumping
-    if (pressedKeys.has("Space")) {
-      isGrounded = handleJump(velocity, isGrounded);
     }
   }
 
