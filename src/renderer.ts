@@ -38,11 +38,15 @@ export class Renderer {
   public highlightPipeline: GPURenderPipeline;
   public uniformBuffer: GPUBuffer;
   public bindGroup: GPUBindGroup;
+  public uiUniformBuffer: GPUBuffer;
+  public uiBindGroup: GPUBindGroup;
   public depthTexture: GPUTexture;
   public debugLineBuffer: GPUBuffer;
   public debugLineBufferSize: number;
   public highlightVertexBuffer: GPUBuffer;
   public highlightVertexBufferSize: number;
+  public crosshairVertexBuffer: GPUBuffer;
+  public crosshairVertexCount: number;
   public viewMatrix: mat4;
   public projectionMatrix: mat4;
   public vpMatrix: mat4;
@@ -67,10 +71,13 @@ export class Renderer {
     highlightPipeline: GPURenderPipeline,
     uniformBuffer: GPUBuffer,
     bindGroup: GPUBindGroup,
+    uiUniformBuffer: GPUBuffer,
+    uiBindGroup: GPUBindGroup,
     debugLineBuffer: GPUBuffer,
     debugLineBufferSize: number,
     highlightVertexBuffer: GPUBuffer,
-    highlightVertexBufferSize: number
+    crosshairVertexBuffer: GPUBuffer,
+    crosshairVertexCount: number
   ) {
     this.device = device;
     this.context = context;
@@ -80,11 +87,14 @@ export class Renderer {
     this.highlightPipeline = highlightPipeline;
     this.uniformBuffer = uniformBuffer;
     this.bindGroup = bindGroup;
-
+    this.uiUniformBuffer = uiUniformBuffer;
+    this.uiBindGroup = uiBindGroup;
     this.debugLineBuffer = debugLineBuffer;
     this.debugLineBufferSize = debugLineBufferSize;
     this.highlightVertexBuffer = highlightVertexBuffer;
-    this.highlightVertexBufferSize = highlightVertexBufferSize;
+    this.highlightVertexBufferSize = INITIAL_HIGHLIGHT_BUFFER_SIZE;
+    this.crosshairVertexBuffer = crosshairVertexBuffer;
+    this.crosshairVertexCount = crosshairVertexCount;
 
     // Matrices
     this.viewMatrix = mat4.create();
@@ -150,28 +160,29 @@ export class Renderer {
       bindGroupLayouts: [bindGroupLayout],
     });
     const bindGroup = device.createBindGroup({
-      layout: bindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+        label: "Main Scene Bind Group",
+        layout: bindGroupLayout,
+        entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+    });
+
+    // UI buffer/group (uses same layout)
+    const uiUniformBuffer = device.createBuffer({
+        label: "UI Uniform Buffer (Identity Matrix)",
+        size: uniformBufferSize,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const uiBindGroup = device.createBindGroup({
+        label: "UI Bind Group",
+        layout: bindGroupLayout,
+        entries: [{ binding: 0, resource: { buffer: uiUniformBuffer } }],
     });
 
     // --- Pipelines ---
-    const voxelPipeline = Renderer.createVoxelPipeline(
-      device,
-      presentationFormat,
-      pipelineLayout
-    );
-    const linePipeline = Renderer.createLinePipeline(
-      device,
-      presentationFormat,
-      pipelineLayout
-    );
-    const highlightPipeline = Renderer.createHighlightPipeline(
-      device,
-      presentationFormat,
-      pipelineLayout
-    );
+    const voxelPipeline = Renderer.createVoxelPipeline(device, presentationFormat, pipelineLayout);
+    const linePipeline = Renderer.createLinePipeline(device, presentationFormat, pipelineLayout);
+    const highlightPipeline = Renderer.createHighlightPipeline(device, presentationFormat, pipelineLayout);
 
-    // --- Debug Line Buffer ---
+    // --- Buffers (Debug, Highlight, Crosshair) ---
     const debugLineBuffer = device.createBuffer({
       label: "Debug Line Buffer",
       size: INITIAL_DEBUG_LINE_BUFFER_SIZE,
@@ -185,6 +196,28 @@ export class Renderer {
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
 
+    // --- Crosshair Vertices (NDC) ---
+    const crosshairSize = 0.02; // Size of the crosshair in NDC
+    const crosshairColor = [1.0, 1.0, 1.0]; // White
+    const crosshairVertices = new Float32Array([
+      // Horizontal line
+      -crosshairSize, 0.0, 0.0, ...crosshairColor, // Left point
+      crosshairSize, 0.0, 0.0, ...crosshairColor, // Right point
+      // Vertical line
+      0.0, -crosshairSize, 0.0, ...crosshairColor, // Bottom point
+      0.0, crosshairSize, 0.0, ...crosshairColor,  // Top point
+    ]);
+    const crosshairVertexCount = 4; // 2 lines * 2 vertices
+
+    const crosshairVertexBuffer = device.createBuffer({
+        label: "Crosshair Vertex Buffer",
+        size: crosshairVertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+    });
+    new Float32Array(crosshairVertexBuffer.getMappedRange()).set(crosshairVertices);
+    crosshairVertexBuffer.unmap();
+
     return new Renderer(
       device,
       context,
@@ -194,10 +227,13 @@ export class Renderer {
       highlightPipeline,
       uniformBuffer,
       bindGroup,
+      uiUniformBuffer,
+      uiBindGroup,
       debugLineBuffer,
       INITIAL_DEBUG_LINE_BUFFER_SIZE,
       highlightVertexBuffer,
-      INITIAL_HIGHLIGHT_BUFFER_SIZE
+      crosshairVertexBuffer,
+      crosshairVertexCount
     );
   }
 
@@ -324,7 +360,7 @@ export class Renderer {
       },
       depthStencil: {
         depthWriteEnabled: false, // Don't write to depth buffer
-        depthCompare: "less", // TEMPORARY: Rule out depth issues
+        depthCompare: "less",
         format: "depth24plus",
       },
     });
@@ -456,12 +492,14 @@ export class Renderer {
     mat4.perspective(this.projectionMatrix, fov, aspect, 0.1, 1000.0);
     mat4.multiply(this.vpMatrix, this.projectionMatrix, this.viewMatrix);
 
-    // Calculate inverse main VP for frustum corners
+    // Calculate inverse main VP for frustum corners (if needed for debug)
     const invVpMatrix = mat4.invert(mat4.create(), this.vpMatrix);
     let worldFrustumCorners: vec3[] = [];
+    let useDebugCamera = false; // Flag to track if we need the debug matrix later
 
-    // Calculate debug camera matrices
-    if (debugCamera) {
+    // Calculate debug camera matrices if needed
+    if (debugCamera && enableDebugView) {
+      useDebugCamera = true;
       mat4.lookAt(
         this.viewMatrixDebug,
         debugCamera.position,
@@ -473,8 +511,8 @@ export class Renderer {
       worldFrustumCorners = Renderer.getFrustumCornersWorldSpace(invVpMatrix);
     }
 
-    // Write the MAIN camera matrix before the render pass for voxel drawing
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array);
+    // Write the MAIN camera matrix BEFORE the render pass for voxel drawing
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array); // Moved back outside
 
     // --- Begin Render Pass ---
     const commandEncoder = this.device.createCommandEncoder();
@@ -497,7 +535,7 @@ export class Renderer {
     };
     const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
 
-    // --- Draw Voxel Scene ---
+    // --- Draw Voxel Scene (uses the VP matrix written before the pass) ---
     const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
     const sceneStats = this.drawVoxelScene(
       passEncoder,
@@ -509,7 +547,7 @@ export class Renderer {
     this.debugInfo.culledChunks = sceneStats.culledChunks;
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
 
-    // --- Prepare Highlight Data ---
+    // --- Prepare and Draw Highlights ---
     let totalHighlightVertices = 0;
     if (highlightedBlockPositions.length > 0) {
         const numberOfHighlightedCubes = highlightedBlockPositions.length;
@@ -526,49 +564,62 @@ export class Renderer {
             });
             console.warn("Resized highlight vertex buffer to:", this.highlightVertexBufferSize);
         }
-        this.device.queue.writeBuffer(this.highlightVertexBuffer, 0, highlightVertexData);
+        this.device.queue.writeBuffer(this.highlightVertexBuffer, 0, highlightVertexData); // Write highlight data
+
+        // Update uniform buffer INSIDE pass ONLY if using debug camera
+        if (useDebugCamera) {
+          this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
+          // If not using debug camera, the main vpMatrix from before the pass is still valid
+        } /* else {
+           // REMOVED: If not in debug view, highlights use the main camera view
+           // this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array);
+        }*/
+        passEncoder.setPipeline(this.highlightPipeline);
+        passEncoder.setBindGroup(0, this.bindGroup); // Bind group uses the currently set VP matrix
+        passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
+        passEncoder.draw(totalHighlightVertices, 1, 0, 0);
     }
 
-    // --- Draw Debug Info ---
-    if (enableDebugView) {
+
+    // --- Draw Debug Info (using DEBUG VP matrix) ---
+    if (enableDebugView && useDebugCamera) { // Only draw debug lines if debug view is enabled
       if (ENABLE_CHUNK_DEBUG_LINES) {
-        const lineData = generateDebugLineVertices(
-          this,
-          chunkMeshes,
-          frustumPlanes,
-          worldFrustumCorners,
-          cameraPosition
-        );
-        // Ensure buffer is large enough (or resize)
-        if (lineData.byteLength > this.debugLineBufferSize) {
-            this.debugLineBuffer.destroy();
-            this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
-            this.debugLineBuffer = this.device.createBuffer({
-                  label: "Debug Line Buffer (Resized)",
-                  size: this.debugLineBufferSize,
-                  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-              });
-              console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
-        }
-        this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData);
+          const lineData = generateDebugLineVertices(
+            this,
+            chunkMeshes,
+            frustumPlanes,
+            worldFrustumCorners,
+            cameraPosition
+          );
+          // Ensure buffer is large enough (or resize)
+          if (lineData.byteLength > this.debugLineBufferSize) {
+              this.debugLineBuffer.destroy();
+              this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
+              this.debugLineBuffer = this.device.createBuffer({
+                    label: "Debug Line Buffer (Resized)",
+                    size: this.debugLineBufferSize,
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+                console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
+          }
+          this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData); // Write debug line data
 
-        drawDebugLines(passEncoder, this, lineData);
+          // Write DEBUG VP matrix INSIDE pass for debug lines
+          this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array); // Needs debug matrix
+          drawDebugLines(passEncoder, this, lineData); // drawDebugLines sets pipeline and binds
       }
-
-      // --- Draw Highlights (using DEBUG camera for now) ---
-      if (totalHighlightVertices > 0) {
-          passEncoder.setPipeline(this.highlightPipeline);
-          passEncoder.setBindGroup(0, this.bindGroup); // Still needs the VP matrix
-          passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
-          passEncoder.draw(totalHighlightVertices, 1, 0, 0); // Draw all generated vertices
-      }
-    } 
-    if (debugCamera) {
-      this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
-    } else {
-      this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array);
+       // Note: Highlights are now drawn earlier if debug view is active
     }
 
+    // --- Draw Crosshair (using IDENTITY matrix, always drawn last in UI space) ---
+    const identityMatrix = mat4.create(); // Create identity matrix
+    this.device.queue.writeBuffer(this.uiUniformBuffer, 0, identityMatrix as Float32Array); // Use uiUniformBuffer
+
+    // Use highlightPipeline to avoid depth writing and ensure drawing
+    passEncoder.setPipeline(this.highlightPipeline); // Use highlight pipeline (depthWrite: false, depthCompare: always)
+    passEncoder.setBindGroup(0, this.uiBindGroup);   // Use uiBindGroup
+    passEncoder.setVertexBuffer(0, this.crosshairVertexBuffer);
+    passEncoder.draw(this.crosshairVertexCount);   // Draw the 4 vertices (2 lines)
 
     // --- Finish Up ---
     passEncoder.end();
