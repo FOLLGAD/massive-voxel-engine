@@ -203,8 +203,8 @@ export class Terrain {
       `Perlin terrain generation complete for chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]}`
     );
 
-    // Add a 10% chance to spawn a floating stone block (Keep chunk?)
-    if (Math.random() < 0.1) {
+    // Add a 1% chance to spawn a floating stone block (Keep chunk?)
+    if (Math.random() < 0.01) {
       const stoneX = Math.floor(Math.random() * CHUNK_SIZE_X);
       const stoneY = Math.floor(Math.random() * CHUNK_SIZE_Y);
       const stoneZ = Math.floor(Math.random() * CHUNK_SIZE_Z);
