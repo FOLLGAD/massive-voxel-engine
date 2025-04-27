@@ -126,11 +126,6 @@ async function main() {
 
   const workerManager = new WorkerManager(numWorkers);
 
-  const bufferMaps = {
-    vertex: new Map<string, GPUBuffer>(),
-    index: new Map<string, GPUBuffer>(),
-  };
-
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
     const type = event.data.type;
@@ -213,7 +208,7 @@ async function main() {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
   };
-  workerManager.onMessageHandler(workerMessageHandler);
+  workerManager.setMessageHandler(workerMessageHandler);
 
   // Debug Info Element
   const debugInfoElement = document.getElementById(
@@ -324,7 +319,7 @@ async function main() {
       fov -= 0.01;
     }
 
-    if (keyboardState.mouseClicked && blockLookedAt) {
+    if (keyboardState.mouseDown && blockLookedAt) {
       const { block } = blockLookedAt;
       const chunkData = loadedChunkData.get(
         getChunkKey(getChunkOfPosition(block))
@@ -335,11 +330,15 @@ async function main() {
       chunk.setVoxel(localPosition, VoxelType.AIR);
       chunkData.set(chunk.data);
 
-      workerManager.queueTask({
-        type: "renderChunk",
-        position: chunk.position,
-        data: chunk.data,
-      });
+      workerManager.queueTask(
+        {
+          type: "renderChunk",
+          position: chunk.position,
+          data: chunk.data,
+        },
+        undefined,
+        true
+      );
     } else if (keyboardState.mouseRightClicked && blockLookedAt) {
       const { block, face } = blockLookedAt;
       const newBlock = vec3.clone(block);
@@ -353,11 +352,15 @@ async function main() {
       chunk.setVoxel(localPosition, VoxelType.STONE);
       chunkData.set(chunk.data);
 
-      workerManager.queueTask({
-        type: "renderChunk",
-        position: chunk.position,
-        data: chunk.data,
-      });
+      workerManager.queueTask(
+        {
+          type: "renderChunk",
+          position: chunk.position,
+          data: chunk.data,
+        },
+        undefined,
+        true
+      );
     }
 
     keyboardState.pressedKeys.clear();
