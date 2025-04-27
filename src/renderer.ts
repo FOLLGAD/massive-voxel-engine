@@ -12,6 +12,8 @@ export const DEBUG_COLOR_PLAYER = [0, 0.8, 0.8]; // Cyan
 const INITIAL_DEBUG_LINE_BUFFER_SIZE = 1024 * 6 * 4 * 10 * 100; // ~100k lines
 const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initially
 const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
+const CROSSHAIR_NDC_SIZE = 0.02; // Base size of the crosshair in NDC units (applied vertically)
+const CROSSHAIR_COLOR = [1.0, 1.0, 1.0]; // White
 
 // @ts-ignore
 import voxelShaderCode from "./shaders/voxel.wsgl" with { type: "text" };
@@ -61,6 +63,7 @@ export class Renderer {
   };
   private canvasWidth = 0;
   private canvasHeight = 0;
+  private aspect = 1.0; // Added aspect ratio state
 
   private constructor(
     device: GPUDevice,
@@ -95,6 +98,11 @@ export class Renderer {
     this.highlightVertexBufferSize = INITIAL_HIGHLIGHT_BUFFER_SIZE;
     this.crosshairVertexBuffer = crosshairVertexBuffer;
     this.crosshairVertexCount = crosshairVertexCount;
+
+    // Initialize aspect ratio
+    this.canvasWidth = this.context.canvas.width;
+    this.canvasHeight = this.context.canvas.height;
+    this.aspect = this.canvasWidth > 0 && this.canvasHeight > 0 ? this.canvasWidth / this.canvasHeight : 1.0;
 
     // Matrices
     this.viewMatrix = mat4.create();
@@ -197,28 +205,19 @@ export class Renderer {
     });
 
     // --- Crosshair Vertices (NDC) ---
-    const crosshairSize = 0.02; // Size of the crosshair in NDC
-    const crosshairColor = [1.0, 1.0, 1.0]; // White
-    const crosshairVertices = new Float32Array([
-      // Horizontal line
-      -crosshairSize, 0.0, 0.0, ...crosshairColor, // Left point
-      crosshairSize, 0.0, 0.0, ...crosshairColor, // Right point
-      // Vertical line
-      0.0, -crosshairSize, 0.0, ...crosshairColor, // Bottom point
-      0.0, crosshairSize, 0.0, ...crosshairColor,  // Top point
-    ]);
-    const crosshairVertexCount = 4; // 2 lines * 2 vertices
+    const aspect = canvas.width > 0 && canvas.height > 0 ? canvas.width / canvas.height : 1.0;
+    const crosshairVertices = Renderer.calculateCrosshairVertices(aspect);
+    const crosshairVertexCount = 4;
 
+    // Create crosshair buffer (no mappedAtCreation needed now)
     const crosshairVertexBuffer = device.createBuffer({
         label: "Crosshair Vertex Buffer",
         size: crosshairVertices.byteLength,
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        mappedAtCreation: true,
     });
-    new Float32Array(crosshairVertexBuffer.getMappedRange()).set(crosshairVertices);
-    crosshairVertexBuffer.unmap();
 
-    return new Renderer(
+    // Create the Renderer instance
+    const renderer = new Renderer(
       device,
       context,
       presentationFormat,
@@ -235,6 +234,11 @@ export class Renderer {
       crosshairVertexBuffer,
       crosshairVertexCount
     );
+
+    // Write initial crosshair data *after* Renderer creation
+    renderer.updateCrosshairBuffer(aspect);
+
+    return renderer;
   }
 
   // --- Pipeline Creation (Static because they don't depend on instance state) ---
@@ -387,6 +391,33 @@ export class Renderer {
     mat4.lookAt(viewMatrix, eye, center, up);
   }
 
+  // Helper to calculate aspect-corrected crosshair vertices
+  private static calculateCrosshairVertices(aspect: number): Float32Array {
+    const sizeY = CROSSHAIR_NDC_SIZE;
+    const sizeX = CROSSHAIR_NDC_SIZE / aspect; // Scale X by inverse aspect ratio
+
+    return new Float32Array([
+        // Horizontal line
+        -sizeX, 0.0, 0.0, ...CROSSHAIR_COLOR, // Left point
+         sizeX, 0.0, 0.0, ...CROSSHAIR_COLOR, // Right point
+        // Vertical line
+         0.0, -sizeY, 0.0, ...CROSSHAIR_COLOR, // Bottom point
+         0.0,  sizeY, 0.0, ...CROSSHAIR_COLOR,  // Top point
+    ]);
+  }
+
+  // Helper to update the crosshair vertex buffer
+  private updateCrosshairBuffer(aspect: number): void {
+      const vertices = Renderer.calculateCrosshairVertices(aspect);
+      // Ensure buffer exists and has the correct usage flags
+      if (this.crosshairVertexBuffer && (this.crosshairVertexBuffer.usage & GPUBufferUsage.COPY_DST)) {
+          this.device.queue.writeBuffer(this.crosshairVertexBuffer, 0, vertices);
+      } else {
+          console.error("Crosshair vertex buffer is not available or cannot be written to.");
+          // Optionally, recreate the buffer here if it's missing or misconfigured
+      }
+  }
+
   private configureDepthTexture(
     device: GPUDevice,
     currentDepthTexture: GPUTexture | null
@@ -492,14 +523,10 @@ export class Renderer {
     mat4.perspective(this.projectionMatrix, fov, aspect, 0.1, 1000.0);
     mat4.multiply(this.vpMatrix, this.projectionMatrix, this.viewMatrix);
 
-    // Calculate inverse main VP for frustum corners (if needed for debug)
     const invVpMatrix = mat4.invert(mat4.create(), this.vpMatrix);
     let worldFrustumCorners: vec3[] = [];
-    let useDebugCamera = false; // Flag to track if we need the debug matrix later
 
-    // Calculate debug camera matrices if needed
     if (debugCamera && enableDebugView) {
-      useDebugCamera = true;
       mat4.lookAt(
         this.viewMatrixDebug,
         debugCamera.position,
@@ -511,13 +538,16 @@ export class Renderer {
       worldFrustumCorners = Renderer.getFrustumCornersWorldSpace(invVpMatrix);
     }
 
-    // Write the MAIN camera matrix BEFORE the render pass for voxel drawing
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array); // Moved back outside
+    // --- Select and Write the Correct VP Matrix BEFORE the Render Pass ---
+    // Use debug VP if debug view is active, otherwise use main VP
+    const activeVpMatrix = debugCamera ? this.vpMatrixDebug : this.vpMatrix;
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, activeVpMatrix as Float32Array);
+
 
     // --- Begin Render Pass ---
     const commandEncoder = this.device.createCommandEncoder();
     const textureView = this.context.getCurrentTexture().createView();
-    const renderPassDescriptor: GPURenderPassDescriptor = {
+    const passEncoder = commandEncoder.beginRenderPass({
       colorAttachments: [
         {
           view: textureView,
@@ -532,10 +562,10 @@ export class Renderer {
         depthLoadOp: "clear",
         depthStoreOp: "store",
       },
-    };
-    const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+    });
 
     // --- Draw Voxel Scene (uses the VP matrix written before the pass) ---
+    // Frustum culling should use the *main* camera's VP matrix, regardless of debug view
     const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
     const sceneStats = this.drawVoxelScene(
       passEncoder,
@@ -548,6 +578,7 @@ export class Renderer {
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
 
     // --- Prepare and Draw Highlights ---
+    // Highlights should respect the currently active view (main or debug)
     let totalHighlightVertices = 0;
     if (highlightedBlockPositions.length > 0) {
         const numberOfHighlightedCubes = highlightedBlockPositions.length;
@@ -566,14 +597,7 @@ export class Renderer {
         }
         this.device.queue.writeBuffer(this.highlightVertexBuffer, 0, highlightVertexData); // Write highlight data
 
-        // Update uniform buffer INSIDE pass ONLY if using debug camera
-        if (useDebugCamera) {
-          this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
-          // If not using debug camera, the main vpMatrix from before the pass is still valid
-        } /* else {
-           // REMOVED: If not in debug view, highlights use the main camera view
-           // this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrix as Float32Array);
-        }*/
+        // NO need to update uniform buffer here, it was set before the pass
         passEncoder.setPipeline(this.highlightPipeline);
         passEncoder.setBindGroup(0, this.bindGroup); // Bind group uses the currently set VP matrix
         passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
@@ -581,34 +605,32 @@ export class Renderer {
     }
 
 
-    // --- Draw Debug Info (using DEBUG VP matrix) ---
-    if (enableDebugView && useDebugCamera) { // Only draw debug lines if debug view is enabled
-      if (ENABLE_CHUNK_DEBUG_LINES) {
-          const lineData = generateDebugLineVertices(
-            this,
-            chunkMeshes,
-            frustumPlanes,
-            worldFrustumCorners,
-            cameraPosition
-          );
-          // Ensure buffer is large enough (or resize)
-          if (lineData.byteLength > this.debugLineBufferSize) {
-              this.debugLineBuffer.destroy();
-              this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
-              this.debugLineBuffer = this.device.createBuffer({
-                    label: "Debug Line Buffer (Resized)",
-                    size: this.debugLineBufferSize,
-                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-                });
-                console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
-          }
-          this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData); // Write debug line data
+    if (enableDebugView) {
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, activeVpMatrix as Float32Array);
 
-          // Write DEBUG VP matrix INSIDE pass for debug lines
-          this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array); // Needs debug matrix
-          drawDebugLines(passEncoder, this, lineData); // drawDebugLines sets pipeline and binds
-      }
-       // Note: Highlights are now drawn earlier if debug view is active
+        if (ENABLE_CHUNK_DEBUG_LINES) {
+            const lineData = generateDebugLineVertices(
+              this,
+              chunkMeshes,
+              frustumPlanes,
+              worldFrustumCorners,
+              cameraPosition
+            );
+            // Ensure buffer is large enough (or resize)
+            if (lineData.byteLength > this.debugLineBufferSize) {
+                this.debugLineBuffer.destroy();
+                this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
+                this.debugLineBuffer = this.device.createBuffer({
+                      label: "Debug Line Buffer (Resized)",
+                      size: this.debugLineBufferSize,
+                      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                  });
+                  console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
+            }
+            this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData); // Write debug line data
+
+            drawDebugLines(passEncoder, this, lineData); // drawDebugLines sets pipeline and binds (uses current uniformBuffer)
+        }
     }
 
     // --- Draw Crosshair (using IDENTITY matrix, always drawn last in UI space) ---
@@ -616,7 +638,7 @@ export class Renderer {
     this.device.queue.writeBuffer(this.uiUniformBuffer, 0, identityMatrix as Float32Array); // Use uiUniformBuffer
 
     // Use highlightPipeline to avoid depth writing and ensure drawing
-    passEncoder.setPipeline(this.highlightPipeline); // Use highlight pipeline (depthWrite: false, depthCompare: always)
+    passEncoder.setPipeline(this.highlightPipeline); // Use highlight pipeline (depthWrite: false)
     passEncoder.setBindGroup(0, this.uiBindGroup);   // Use uiBindGroup
     passEncoder.setVertexBuffer(0, this.crosshairVertexBuffer);
     passEncoder.draw(this.crosshairVertexCount);   // Draw the 4 vertices (2 lines)
@@ -625,7 +647,6 @@ export class Renderer {
     passEncoder.end();
     this.device.queue.submit([commandEncoder.finish()]);
 
-    // No need to return updatedDepthTexture as it's internal state now
     return {
       totalTriangles: sceneStats.totalTriangles,
       drawnChunks: sceneStats.drawnChunks,
@@ -634,7 +655,7 @@ export class Renderer {
 
     // Method to resize canvas and internal textures
     public resize(width: number, height: number) {
-        if (width === 0 || height === 0) return; // Avoid issues with zero size
+        if (width <= 0 || height <= 0) return; // Avoid issues with zero/negative size
 
         const canvas = this.context.canvas as HTMLCanvasElement;
         if (canvas.width === width && canvas.height === height) {
@@ -643,11 +664,15 @@ export class Renderer {
 
         canvas.width = width;
         canvas.height = height;
+        this.canvasWidth = width; // Update internal dimensions first
+        this.canvasHeight = height;
 
         // Reconfigure depth texture
         this.depthTexture = this.configureDepthTexture(this.device, this.depthTexture);
-        this.canvasWidth = width;
-        this.canvasHeight = height;
+
+        // Update aspect ratio and crosshair buffer
+        this.aspect = this.canvasWidth / this.canvasHeight;
+        this.updateCrosshairBuffer(this.aspect);
 
         console.log(`Renderer resized to ${width}x${height}`);
     }
