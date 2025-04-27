@@ -24,7 +24,7 @@ import { KeyboardState } from "./keyboard";
 import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
 
-const DEBUG_MODE = false;
+const DEBUG_MODE = true;
 
 log("Main", "Main script loaded.");
 
@@ -221,41 +221,35 @@ async function main() {
   ) as HTMLDivElement;
 
   const getBlockLookedAt = (position: vec3, cameraYaw: number) => {
-    const lookDirection = vec3.create();
-    lookDirection[0] = Math.cos(cameraPitch) * Math.sin(cameraYaw);
-    lookDirection[1] = Math.sin(cameraPitch);
-    lookDirection[2] = Math.cos(cameraPitch) * Math.cos(cameraYaw);
+    const lookDirection = vec3.fromValues(
+      Math.cos(cameraPitch) * Math.sin(cameraYaw),
+      Math.sin(cameraPitch),
+      Math.cos(cameraPitch) * Math.cos(cameraYaw)
+    );
     vec3.normalize(lookDirection, lookDirection);
 
-    const rayStart = vec3.create();
-    vec3.copy(rayStart, position);
-    const rayEnd = vec3.create();
-    vec3.scaleAndAdd(rayEnd, rayStart, lookDirection, 100);
+    const rayStart = vec3.clone(position);
 
     // Raycast to find the block the player is looking at
     const MAX_DISTANCE = 20.0; // Maximum distance to check for blocks
     const STEP_SIZE = 0.05; // Size of each step along the ray
 
-    // Start from eye position (slightly above player position)
-    const eyePosition = vec3.clone(rayStart);
-    eyePosition[1] += 1.7; // Approximate eye height
-
-    const currentPos = vec3.clone(eyePosition);
+    const currentPos = vec3.clone(rayStart);
     const lastPos = vec3.clone(currentPos);
 
     // Step along the ray
     for (let distance = 0; distance <= MAX_DISTANCE; distance += STEP_SIZE) {
-      vec3.scaleAndAdd(currentPos, eyePosition, lookDirection, distance);
+      vec3.scaleAndAdd(currentPos, rayStart, lookDirection, distance);
 
       // Get block at current position
-      const blockX = Math.floor(currentPos[0]);
-      const blockY = Math.floor(currentPos[1]);
-      const blockZ = Math.floor(currentPos[2]);
+      const block = vec3.fromValues(
+        Math.floor(currentPos[0]),
+        Math.floor(currentPos[1]),
+        Math.floor(currentPos[2])
+      );
 
       // Get chunk key for this block
-      const blockChunk = getChunkOfPosition(
-        vec3.fromValues(blockX, blockY, blockZ)
-      );
+      const blockChunk = getChunkOfPosition(block);
       const chunkKey = getChunkKey(blockChunk);
 
       // Check if chunk is loaded
@@ -263,39 +257,44 @@ async function main() {
       if (!chunkData) continue;
 
       // Get local coordinates within chunk
-      const localX = ((blockX % CHUNK_SIZE_X) + CHUNK_SIZE_X) % CHUNK_SIZE_X;
-      const localY = ((blockY % CHUNK_SIZE_Y) + CHUNK_SIZE_Y) % CHUNK_SIZE_Y;
-      const localZ = ((blockZ % CHUNK_SIZE_Z) + CHUNK_SIZE_Z) % CHUNK_SIZE_Z;
+      const localPosition = getLocalPosition(block);
 
       // Get voxel index
-      const voxelIndex =
-        localX + localY * CHUNK_SIZE_X + localZ * CHUNK_SIZE_X * CHUNK_SIZE_Y;
+      const chunk = new Chunk(blockChunk, chunkData);
 
       // Check if block exists (non-zero)
-      if (chunkData[voxelIndex] !== 0) {
-        // Determine which face was hit by checking which axis changed most recently
-        const dx = currentPos[0] - lastPos[0];
-        const dy = currentPos[1] - lastPos[1];
-        const dz = currentPos[2] - lastPos[2];
+      if (chunk.getVoxel(localPosition) !== VoxelType.AIR) {
+        // --- Determine which face was hit ---
+        // Calculate the center of the block
+        const blockCenter = vec3.add(vec3.create(), block, [0.5, 0.5, 0.5]);
+        // Vector from block center to the intersection point
+        const intersectionVec = vec3.sub(
+          vec3.create(),
+          currentPos,
+          blockCenter
+        );
+        // Find the axis with the largest absolute component
+        const absX = Math.abs(intersectionVec[0]);
+        const absY = Math.abs(intersectionVec[1]);
+        const absZ = Math.abs(intersectionVec[2]);
 
-        const absDx = Math.abs(dx);
-        const absDy = Math.abs(dy);
-        const absDz = Math.abs(dz);
+        let face: 0 | 1 | 2 | 3 | 4 | 5 = 0; // Default, should always be overwritten
 
-        let hitFace: 0 | 1 | 2 | 3 | 4 | 5 | null = null;
-        if (absDx >= absDy && absDx >= absDz) {
-          hitFace = dx > 0 ? 0 : 1; // +X or -X face
-        } else if (absDy >= absDx && absDy >= absDz) {
-          hitFace = dy > 0 ? 2 : 3; // +Y or -Y face
+        if (absX >= absY && absX >= absZ) {
+          // Hit X face
+          face = intersectionVec[0] > 0 ? 0 : 1; // +X or -X
+        } else if (absY >= absX && absY >= absZ) {
+          // Hit Y face
+          face = intersectionVec[1] > 0 ? 2 : 3; // +Y or -Y
         } else {
-          hitFace = dz > 0 ? 4 : 5; // +Z or -Z face
+          // Hit Z face
+          face = intersectionVec[2] > 0 ? 4 : 5; // +Z or -Z
         }
+        // --- End Face Calculation ---
 
         return {
-          block: vec3.fromValues(blockX, blockY, blockZ),
-          voxelIndex: voxelIndex,
-          face: hitFace,
-          chunkKey: chunkKey,
+          block,
+          face,
         };
       }
 
@@ -326,13 +325,15 @@ async function main() {
     }
 
     if (keyboardState.mouseClicked && blockLookedAt) {
-      const { block, chunkKey } = blockLookedAt;
-      const chunkData = loadedChunkData.get(chunkKey);
+      const { block } = blockLookedAt;
+      const chunkData = loadedChunkData.get(
+        getChunkKey(getChunkOfPosition(block))
+      );
       if (!chunkData) return;
       const chunk = new Chunk(getChunkOfPosition(block), chunkData);
       const localPosition = getLocalPosition(block);
       chunk.setVoxel(localPosition, VoxelType.AIR);
-      loadedChunkData.set(chunkKey, chunk.data);
+      chunkData.set(chunk.data);
 
       workerManager.queueTask({
         type: "renderChunk",
@@ -340,20 +341,23 @@ async function main() {
         data: chunk.data,
       });
     } else if (keyboardState.mouseRightClicked && blockLookedAt) {
-      // const { block, chunkKey, face } = blockLookedAt;
-      // const newBlock = vec3.clone(block);
-      // vec3.add(newBlock, block, FACE_NORMALS[face]);
-      // const chunkData = loadedChunkData.get(chunkKey);
-      // if (!chunkData) return;
-      // const chunk = new Chunk(getChunkOfPosition(block), chunkData);
-      // const localPosition = getLocalPosition(block);
-      // chunk.setVoxel(localPosition, VoxelType.STONE);
-      // loadedChunkData.set(chunkKey, chunk.data);
-      // workerManager.queueTask({
-      //   type: "renderChunk",
-      //   position: chunk.position,
-      //   data: chunk.data,
-      // });
+      const { block, face } = blockLookedAt;
+      const newBlock = vec3.clone(block);
+      vec3.add(newBlock, block, FACE_NORMALS[face]);
+      const localPosition = getLocalPosition(newBlock);
+      const chunkData = loadedChunkData.get(
+        getChunkKey(getChunkOfPosition(newBlock))
+      );
+      if (!chunkData) return;
+      const chunk = new Chunk(getChunkOfPosition(newBlock), chunkData);
+      chunk.setVoxel(localPosition, VoxelType.STONE);
+      chunkData.set(chunk.data);
+
+      workerManager.queueTask({
+        type: "renderChunk",
+        position: chunk.position,
+        data: chunk.data,
+      });
     }
 
     keyboardState.pressedKeys.clear();
@@ -410,7 +414,10 @@ async function main() {
       playerState.position[2]
     );
 
-    blockLookedAt = getBlockLookedAt(playerState.position, cameraYaw);
+    blockLookedAt = getBlockLookedAt(
+      playerState.getCameraPosition(),
+      cameraYaw
+    );
     const highlightedBlockPositions: vec3[] = [];
     if (blockLookedAt?.block) {
       highlightedBlockPositions.push(blockLookedAt.block);

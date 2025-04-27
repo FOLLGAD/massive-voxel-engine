@@ -62,7 +62,7 @@ export function generateDebugLineVertices(
   frustumPlanes: Plane[],
   worldFrustumCorners: vec3[],
   cameraPosition: vec3
-): Float32Array | null {
+): Float32Array {
   const lineVertices: number[] = [];
 
   // Generate lines for ALL culled/drawn chunks (based on FP camera)
@@ -87,14 +87,10 @@ export function generateDebugLineVertices(
   addAABBLineVertices(lineVertices, playerAABB, DEBUG_COLOR_PLAYER);
 
   // Prepare buffer data
-  const lineData = new Float32Array(lineVertices);
-  if (lineData.byteLength > renderer.getDebugLineBufferSize()) {
-    console.warn("Renderer", "Debug line buffer too small, resizing needed!");
-    return null; // Don't draw if buffer is too small
-  }
-  return lineData.length > 0 ? lineData : null;
-} /** Adds line vertices (pos[3] + color[3]) for the 12 edges of an AABB */
+  return new Float32Array(lineVertices);
+}
 
+/** Adds line vertices (pos[3] + color[3]) for the 12 edges of an AABB */
 export function addAABBLineVertices(
   vertices: number[],
   aabb: { min: vec3; max: vec3 },

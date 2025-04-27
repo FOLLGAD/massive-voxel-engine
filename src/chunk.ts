@@ -11,11 +11,10 @@ import { ENABLE_GREEDY_MESHING } from "./config";
 import log from "./logger";
 
 export const getLocalPosition = (position: vec3) => {
-  return vec3.fromValues(
-    position[0] % CHUNK_SIZE_X,
-    position[1] % CHUNK_SIZE_Y,
-    position[2] % CHUNK_SIZE_Z
-  );
+  const x = ((position[0] % CHUNK_SIZE_X) + CHUNK_SIZE_X) % CHUNK_SIZE_X;
+  const y = ((position[1] % CHUNK_SIZE_Y) + CHUNK_SIZE_Y) % CHUNK_SIZE_Y;
+  const z = ((position[2] % CHUNK_SIZE_Z) + CHUNK_SIZE_Z) % CHUNK_SIZE_Z;
+  return vec3.fromValues(x, y, z);
 };
 
 export const getChunkOfPosition = (position: vec3) => {
@@ -83,11 +82,16 @@ export class Chunk {
     return chunk;
   }
 
-  getVoxel(localPos: vec3): VoxelType {
-    const index =
+  getVoxelIndex(localPos: vec3): number {
+    return (
       localPos[0] +
       localPos[1] * CHUNK_SIZE_X +
-      localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y;
+      localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y
+    );
+  }
+
+  getVoxel(localPos: vec3): VoxelType {
+    const index = this.getVoxelIndex(localPos);
     if (
       localPos[0] < 0 ||
       localPos[0] >= CHUNK_SIZE_X ||
@@ -119,10 +123,7 @@ export class Chunk {
     ) {
       return;
     }
-    const index =
-      localPos[0] +
-      localPos[1] * CHUNK_SIZE_X +
-      localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y;
+    const index = this.getVoxelIndex(localPos);
     // biome-ignore lint/style/noNonNullAssertion: <explanation>
     this.data![index] = type;
   }

@@ -9,7 +9,7 @@ export const DEBUG_COLOR_CULLED = [1, 0, 0]; // Red
 export const DEBUG_COLOR_DRAWN = [0, 1, 0]; // Green
 export const DEBUG_COLOR_FRUSTUM = [0.8, 0.8, 0]; // Yellow
 export const DEBUG_COLOR_PLAYER = [0, 0.8, 0.8]; // Cyan
-const INITIAL_DEBUG_LINE_BUFFER_SIZE = 1024 * 6 * 4 * 10 * 20; // ~20k lines
+const INITIAL_DEBUG_LINE_BUFFER_SIZE = 1024 * 6 * 4 * 10 * 100; // ~100k lines
 const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initially
 const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
 
@@ -25,6 +25,8 @@ import cullChunksShader from "./shaders/cullChunks.wsgl" with { type: "text" };
 // --- Frustum Culling Types ---
 /** Represents a plane equation: Ax + By + Cz + D = 0 */
 export type Plane = vec4; // [A, B, C, D]
+
+const ENABLE_CHUNK_DEBUG_LINES = false;
 
 // --- Renderer Class ---
 export class Renderer {
@@ -528,32 +530,30 @@ export class Renderer {
     }
 
     // --- Draw Debug Info ---
-    let lineData: Float32Array | null = null;
     if (enableDebugView) {
-      lineData = generateDebugLineVertices(
-        this,
-        chunkMeshes,
-        frustumPlanes,
-        worldFrustumCorners,
-        cameraPosition
-      );
-    }
+      if (ENABLE_CHUNK_DEBUG_LINES) {
+        const lineData = generateDebugLineVertices(
+          this,
+          chunkMeshes,
+          frustumPlanes,
+          worldFrustumCorners,
+          cameraPosition
+        );
+        // Ensure buffer is large enough (or resize)
+        if (lineData.byteLength > this.debugLineBufferSize) {
+            this.debugLineBuffer.destroy();
+            this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
+            this.debugLineBuffer = this.device.createBuffer({
+                  label: "Debug Line Buffer (Resized)",
+                  size: this.debugLineBufferSize,
+                  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+              });
+              console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
+        }
+        this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData);
 
-    if (lineData && lineData.length > 0) {
-      // Ensure buffer is large enough (or resize)
-      if (lineData.byteLength > this.debugLineBufferSize) {
-          this.debugLineBuffer.destroy();
-          this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
-           this.debugLineBuffer = this.device.createBuffer({
-                label: "Debug Line Buffer (Resized)",
-                size: this.debugLineBufferSize,
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
-            console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
+        drawDebugLines(passEncoder, this, lineData);
       }
-      this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData);
-
-      drawDebugLines(passEncoder, this, lineData);
 
       // --- Draw Highlights (using DEBUG camera for now) ---
       if (totalHighlightVertices > 0) {
@@ -562,8 +562,6 @@ export class Renderer {
           passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
           passEncoder.draw(totalHighlightVertices, 1, 0, 0); // Draw all generated vertices
       }
-
-      // Restore MAIN camera matrix if we were in debug view
     } 
     if (debugCamera) {
       this.device.queue.writeBuffer(this.uniformBuffer, 0, this.vpMatrixDebug as Float32Array);
