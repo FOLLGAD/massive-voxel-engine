@@ -100,11 +100,8 @@ export class ChunkManager {
 
     let foundVertex = false;
     let vertexOffsetBytes = 0;
-    // try to find space for the vertex data
     let i = 0;
-    // Loop should go up to length - 1 to compare element i with i + 1
     for (; i < this.sortedChunkGeometryInfoVertex.length - 1; i++) {
-      // compare current offset + size with next offset to check how much space is left
       const startOffset =
         this.sortedChunkGeometryInfoVertex[i].offset +
         this.sortedChunkGeometryInfoVertex[i].size;
@@ -114,8 +111,6 @@ export class ChunkManager {
       if (spaceLeft >= vertexSizeBytes) {
         foundVertex = true;
         vertexOffsetBytes = startOffset;
-        // insert the vertex data at the current offset
-        // Use i + 1 as the insertion index because we found space *after* index i
         this.sortedChunkGeometryInfoVertex.splice(i + 1, 0, {
           offset: vertexOffsetBytes,
           size: vertexSizeBytes,
@@ -125,12 +120,9 @@ export class ChunkManager {
       }
     }
     if (!foundVertex) {
-      // If the array is empty, start at offset 0. Otherwise, append after the last chunk.
       if (this.sortedChunkGeometryInfoVertex.length === 0) {
         vertexOffsetBytes = 0;
       } else {
-        // No need to recalculate i, the loop finishes with i pointing to the last checked index (or 0 if loop didn't run)
-        // Append after the last element
         const lastElementIndex = this.sortedChunkGeometryInfoVertex.length - 1;
         vertexOffsetBytes =
           this.sortedChunkGeometryInfoVertex[lastElementIndex].offset +
@@ -150,64 +142,25 @@ export class ChunkManager {
     );
 
     console.log(
-      `[Staging Vertex Write] Offset: ${vertexOffsetBytes}, Data Size: ${vertexData.byteLength}, Target Buffer Size: ${this.sharedVertexBuffer?.size}`
+      `[Before Vertex Write] Type: ${vertexData?.constructor?.name}, Offset: ${vertexOffsetBytes}, Data Size: ${vertexData?.byteLength}, Buffer Size: ${this.sharedVertexBuffer?.size}, Buffer State: ${this.sharedVertexBuffer?.mapState}`
     );
-
-    // 1. Create Staging Buffer (ensure size is multiple of 4)
-    // Make size slightly larger if needed to ensure alignment for copyBufferToBuffer sourceOffset (must be multiple of 4)
-    const stagingVertexBufferSize = Math.ceil(vertexData.byteLength / 4) * 4;
-    if (stagingVertexBufferSize === 0) {
-      console.warn(`Vertex data for chunk ${key} is empty. Skipping vertex write.`);
-    } else {
-      const stagingVertexBuffer = this.device.createBuffer({
-        label: `Staging Vertex Buffer for ${key}`,
-        size: stagingVertexBufferSize,
-        usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, // Source for copy
-        mappedAtCreation: true, // Map immediately
-      });
-
-      // 2. Write data to staging buffer's mapped range
-      new Float32Array(stagingVertexBuffer.getMappedRange()).set(vertexData);
-      stagingVertexBuffer.unmap();
-
-      // 3. Create Command Encoder and Copy
-      // Important: This needs to happen OUTSIDE the render pass encoding.
-      // If addChunk is called during render prep, you might need to queue these commands
-      // or create a separate encoder just for these copies.
-      // Assuming we can create an encoder here for simplicity:
-      const commandEncoder = this.device.createCommandEncoder({ label: `Vertex Copy Encoder for ${key}` });
-
-      // Check if copy exceeds target buffer bounds BEFORE encoding
-      if (vertexOffsetBytes + vertexData.byteLength > this.sharedVertexBuffer.size) {
-        console.error(`[Copy Vertex] Attempting to copy vertex data past buffer boundary! Offset=${vertexOffsetBytes}, Size=${vertexData.byteLength}, BufferSize=${this.sharedVertexBuffer.size}`);
-        // Decide how to handle - skip copy? throw error?
-      } else {
-        commandEncoder.copyBufferToBuffer(
-          stagingVertexBuffer, // Source
-          0, // Source Offset (must be multiple of 4)
-          this.sharedVertexBuffer, // Destination
-          vertexOffsetBytes, // Destination Offset (must be multiple of 4)
-          vertexData.byteLength // Size to copy (must be multiple of 4 if not full buffer)
-          // Using byteLength should be okay if it's already aligned,
-          // otherwise use stagingVertexBufferSize if padding was added.
-          // Let's stick to byteLength assuming input is correctly sized.
-        );
-
-        // 4. Submit copy command (needs to happen eventually)
-        this.device.queue.submit([commandEncoder.finish()]);
-
-        // 5. Destroy staging buffer (optional, but good practice after copy is submitted/done)
-        // Note: Don't destroy immediately if submit hasn't happened or GPU hasn't finished.
-        // A more robust system might pool/reuse staging buffers or destroy them later.
-        // stagingVertexBuffer.destroy(); // Be careful with timing
-      }
+    if (
+      vertexOffsetBytes + vertexData.byteLength >
+      this.sharedVertexBuffer.size
+    ) {
+      console.error("Attempting to write vertex data past buffer boundary!");
     }
+    this.device.queue.writeBuffer(
+      this.sharedVertexBuffer,
+      vertexOffsetBytes,
+      vertexData,
+      0,
+      vertexData.length
+    );
 
     let foundIndex = false;
     let indexOffsetBytes = 0;
-
     i = 0;
-    // Loop should go up to length - 1 to compare element i with i + 1
     for (; i < this.sortedChunkGeometryInfoIndex.length - 1; i++) {
       const startOffset =
         this.sortedChunkGeometryInfoIndex[i].offset +
@@ -218,7 +171,6 @@ export class ChunkManager {
       if (spaceLeft >= indexSizeBytes) {
         foundIndex = true;
         indexOffsetBytes = startOffset;
-        // Use i + 1 as the insertion index because we found space *after* index i
         this.sortedChunkGeometryInfoIndex.splice(i + 1, 0, {
           offset: indexOffsetBytes,
           size: indexSizeBytes,
@@ -228,11 +180,9 @@ export class ChunkManager {
       }
     }
     if (!foundIndex) {
-      // If the array is empty, start at offset 0. Otherwise, append after the last chunk.
       if (this.sortedChunkGeometryInfoIndex.length === 0) {
         indexOffsetBytes = 0;
       } else {
-        // Append after the last element
         const lastElementIndex = this.sortedChunkGeometryInfoIndex.length - 1;
         indexOffsetBytes =
           this.sortedChunkGeometryInfoIndex[lastElementIndex].offset +
@@ -252,55 +202,30 @@ export class ChunkManager {
     );
 
     console.log(
-      `[Staging Index Write] Offset: ${indexOffsetBytes}, Data Size: ${indexData.byteLength}, Target Buffer Size: ${this.sharedIndexBuffer?.size}`
+      `[Before Index Write] Type: ${indexData?.constructor?.name}, Offset: ${indexOffsetBytes}, Data Size: ${indexData?.byteLength}, Buffer Size: ${this.sharedIndexBuffer?.size}, Buffer State: ${this.sharedIndexBuffer?.mapState}`
     );
-
-    // 1. Create Staging Buffer (ensure size is multiple of 4)
-    const stagingIndexBufferSize = Math.ceil(indexData.byteLength / 4) * 4;
-    if (stagingIndexBufferSize === 0) {
-      console.warn(`Index data for chunk ${key} is empty. Skipping index write.`);
+    if (indexOffsetBytes + indexData.byteLength > this.sharedIndexBuffer.size) {
+      console.error("Attempting to write index data past buffer boundary!");
+    }
+    if (indexData.byteLength > 0) {
+      this.device.queue.writeBuffer(
+        this.sharedIndexBuffer,
+        indexOffsetBytes,
+        indexData,
+        0,
+        indexData.length
+      );
     } else {
-      const stagingIndexBuffer = this.device.createBuffer({
-        label: `Staging Index Buffer for ${key}`,
-        size: stagingIndexBufferSize,
-        usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
-        mappedAtCreation: true,
-      });
-
-      // 2. Write data to staging buffer
-      new Uint32Array(stagingIndexBuffer.getMappedRange()).set(indexData); // Use Uint32Array for indices
-      stagingIndexBuffer.unmap();
-
-      // 3. Create Command Encoder and Copy
-      // Reuse the vertex encoder or create a new one if needed
-      // IMPORTANT: See previous note about command encoder timing
-      const commandEncoder = this.device.createCommandEncoder({ label: `Index Copy Encoder for ${key}` });
-
-      // Check bounds BEFORE encoding
-      if (indexOffsetBytes + indexData.byteLength > this.sharedIndexBuffer.size) {
-        console.error(`[Copy Index] Attempting to copy index data past buffer boundary! Offset=${indexOffsetBytes}, Size=${indexData.byteLength}, BufferSize=${this.sharedIndexBuffer.size}`);
-      } else {
-        commandEncoder.copyBufferToBuffer(
-          stagingIndexBuffer,     // Source
-          0,                      // Source Offset
-          this.sharedIndexBuffer, // Destination
-          indexOffsetBytes,        // Destination Offset
-          indexData.byteLength     // Size
-        );
-
-        // 4. Submit copy command
-        this.device.queue.submit([commandEncoder.finish()]);
-
-        // 5. Destroy staging buffer (optional, consider timing)
-        // stagingIndexBuffer.destroy();
-      }
+      console.warn(
+        `Index data for chunk ${key} is empty. Skipping index write.`
+      );
     }
 
-    // Calculate firstIndex and baseVertex
-    const firstIndex = indexData.byteLength > 0 ? indexOffsetBytes / INDEX_SIZE_BYTES : 0; // Avoid NaN if length is 0
-    const baseVertex = vertexData.byteLength > 0 ? vertexOffsetBytes / VERTEX_STRIDE_BYTES : 0; // Avoid NaN if length is 0
+    const firstIndex =
+      indexData.byteLength > 0 ? indexOffsetBytes / INDEX_SIZE_BYTES : 0;
+    const baseVertex =
+      vertexData.byteLength > 0 ? vertexOffsetBytes / VERTEX_STRIDE_BYTES : 0;
 
-    // Assert that calculations result in integers (important!)
     if (firstIndex % 1 !== 0) {
       console.warn(
         `Calculated firstIndex (${firstIndex}) is not an integer. indexOffsetBytes=${indexOffsetBytes}, INDEX_SIZE_BYTES=${INDEX_SIZE_BYTES}`
@@ -359,10 +284,8 @@ export class ChunkManager {
 
   freeChunkGeometryInfo(position: vec3) {
     const key = getChunkKey(position);
-    // Delete from the main map *first* so it's not found if accessed during freeing
     const removed = this.chunkGeometryInfo.delete(key);
 
-    // Only try to splice if the key was actually present and removed
     if (removed) {
       let index: number;
       index = this.sortedChunkGeometryInfoVertex.findIndex(
