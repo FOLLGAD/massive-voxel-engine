@@ -42,6 +42,7 @@ const loadedChunkData = new Map<string, Uint8Array>();
 const requestedChunkKeys = new Set<string>();
 const playerState = new PlayerState();
 let rendererState: Renderer; // Will be initialized later
+let keysUpdatedSinceLastSync: string[] = [];
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
@@ -168,14 +169,37 @@ async function main() {
         min: vec3.fromValues(minX, minY, minZ),
         max: vec3.fromValues(maxX, maxY, maxZ),
       };
-      rendererState.chunkManager.updateChunkGeometryInfo(
-        position,
-        vertices,
-        vertices.byteLength,
-        indices,
-        indices.byteLength,
-        aabb
-      );
+
+      const key = getChunkKey(position);
+
+      // Determine if it's an update or a new add based on chunkManager state
+      const isUpdate = rendererState.chunkManager.chunkGeometryInfo.has(key);
+
+      try {
+        if (isUpdate) {
+          rendererState.chunkManager.updateChunkGeometryInfo(
+            position,
+            vertices,
+            vertices.byteLength,
+            indices,
+            indices.byteLength,
+            aabb
+          );
+        } else {
+          rendererState.chunkManager.addChunk(
+            position,
+            vertices,
+            vertices.byteLength,
+            indices,
+            indices.byteLength,
+            aabb
+          );
+        }
+        // Track the key if add/update didn't throw
+        keysUpdatedSinceLastSync.push(key);
+      } catch (error) {
+        log.error("Main", `Error processing mesh update for ${key}:`, error);
+      }
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
@@ -355,7 +379,6 @@ async function main() {
         dy > LOAD_RADIUS_Y + UNLOAD_BUFFER_Y ||
         dz > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ
       ) {
-        log("Main", `Unloading chunk: ${key}`);
         rendererState.chunkManager.deleteChunk(chunkMesh.position);
         loadedChunkData.delete(key);
         requestedChunkKeys.delete(key);
@@ -497,8 +520,15 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
     const deltaTime = now - lastFrameTime;
     lastFrameTime = now;
 
-    frame(deltaTime);
+    // Process physics and potentially queue more chunk updates via worker tasks
     physicsStep(deltaTime);
+
+    // Perform GPU synchronization *before* rendering
+    finalizeChunkUpdates();
+
+    // Render the frame (will only draw 'ready' chunks)
+    frame(deltaTime);
+
     requestAnimationFrame(frameLoop);
   };
 
@@ -507,6 +537,41 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
   window.addEventListener("resize", () => {
     rendererState?.resize(window.innerWidth, window.innerHeight);
   });
+
+  // --- Synchronization Function ---
+  function finalizeChunkUpdates() {
+    if (keysUpdatedSinceLastSync.length > 0) {
+      const keysToMarkReady = [...keysUpdatedSinceLastSync]; // Copy keys
+      keysUpdatedSinceLastSync = []; // Reset batch tracker
+
+      rendererState.chunkManager.device.queue
+        .onSubmittedWorkDone()
+        .then(() => {
+          for (const key of keysToMarkReady) {
+            const chunkInfo =
+              rendererState.chunkManager.chunkGeometryInfo.get(key);
+            if (chunkInfo) {
+              if (chunkInfo.status === "updating") {
+                chunkInfo.status = "ready"; // <-- THE CRITICAL STEP
+              } else {
+                // This can happen if the chunk was deleted or updated again
+                // before the promise resolved. Usually safe to ignore.
+                console.warn(
+                  `Sync: Chunk ${key} status was not 'updating' (was ${chunkInfo.status}) when marking ready.`
+                );
+              }
+            } else {
+              // This can happen if the chunk was deleted before the promise resolved.
+              console.warn(`Sync: Chunk ${key} not found when marking ready.`);
+            }
+          }
+        })
+        .catch((err) => {
+          console.error("Sync: onSubmittedWorkDone error:", err);
+          // Consider how to handle this - maybe retry marking later?
+        });
+    }
+  }
 }
 
 main().catch((err) => {

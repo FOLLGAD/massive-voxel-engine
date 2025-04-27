@@ -14,11 +14,9 @@ const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initiall
 const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
 const CROSSHAIR_NDC_SIZE = 0.02; // Base size of the crosshair in NDC units (applied vertically)
 const CROSSHAIR_COLOR = [1.0, 1.0, 1.0]; // White
-const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 128; // Example: 128MB (Increased from 64MB)
-const INITIAL_SHARED_INDEX_BUFFER_SIZE = 1024 * 1024 * 64;  // Example: 64MB (Increased from 32MB - good idea to increase this too)
-const VERTEX_STRIDE_BYTES = 9 * Float32Array.BYTES_PER_ELEMENT; // Matches voxelVertexBufferLayout
+const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 256; // Example: 256MB (Increased from 64MB)
+const INITIAL_SHARED_INDEX_BUFFER_SIZE = 1024 * 1024 * 128;  // Example: 128MB (Increased from 64MB)
 const INDEX_FORMAT: GPUIndexFormat = "uint32";
-const INDEX_SIZE_BYTES = 4; // Based on uint32
 
 // @ts-ignore
 import voxelShaderCode from "./shaders/voxel.wsgl" with { type: "text" };
@@ -605,8 +603,7 @@ export class Renderer {
     const allChunkInfos = this.chunkManager.chunkGeometryInfo.values(); // Get infos from manager
 
     for (const info of allChunkInfos) {
-      // Assuming ChunkGeometryInfo has an 'aabb' property
-      if (Renderer.intersectFrustumAABB(frustumPlanes, info.aabb)) {
+      if ((info.status === 'ready' || info.status === 'updating') && Renderer.intersectFrustumAABB(frustumPlanes, info.aabb)) {
         visibleChunkInfos.push(info);
       } else {
         culledChunks++;
@@ -619,7 +616,7 @@ export class Renderer {
     // Update debug info based on culling results and draw stats
     this.debugInfo.totalChunks = this.chunkManager.chunkGeometryInfo.size;
     this.debugInfo.drawnChunks = sceneStats.drawnChunks;
-    this.debugInfo.culledChunks = culledChunks; // Use count from the culling loop
+    this.debugInfo.culledChunks = culledChunks;
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
 
 

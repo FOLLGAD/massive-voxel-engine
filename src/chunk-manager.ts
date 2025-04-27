@@ -38,6 +38,9 @@ export interface ChunkGeometryInfo {
 
   /** The value added to each index before reading from the vertex buffer. */
   baseVertex: number;
+
+  /** Current state for rendering synchronization */
+  status: "ready" | "updating";
 }
 
 export interface MemorySpaceInfo {
@@ -46,15 +49,81 @@ export interface MemorySpaceInfo {
   key: string;
 }
 
+// Interface for free blocks (no key needed)
+export interface FreeSpaceInfo {
+  offset: number;
+  size: number;
+}
+
+// Helper function to insert a block into a sorted free list and merge adjacent blocks
+function insertAndMergeFreeBlock(
+  freeList: FreeSpaceInfo[],
+  newBlock: FreeSpaceInfo
+) {
+  let inserted = false;
+  for (let i = 0; i < freeList.length; i++) {
+    if (newBlock.offset < freeList[i].offset) {
+      // Insert before element i
+      freeList.splice(i, 0, newBlock);
+      inserted = true;
+
+      // Attempt merge with previous (if exists and adjacent)
+      if (
+        i > 0 &&
+        freeList[i - 1].offset + freeList[i - 1].size === newBlock.offset
+      ) {
+        freeList[i - 1].size += newBlock.size;
+        freeList.splice(i, 1); // Remove newBlock (now merged)
+        i--; // Adjust index after removal
+      }
+
+      // Attempt merge with next (element at new index i, which was originally at i or i+1)
+      const currentBlock = freeList[i];
+      if (
+        i + 1 < freeList.length &&
+        currentBlock.offset + currentBlock.size === freeList[i + 1].offset
+      ) {
+        currentBlock.size += freeList[i + 1].size;
+        freeList.splice(i + 1, 1); // Remove next block
+      }
+      break; // Exit loop once inserted and merged
+    }
+  }
+
+  // If not inserted yet, it belongs at the end
+  if (!inserted) {
+    // Attempt merge with last element (if exists and adjacent)
+    if (
+      freeList.length > 0 &&
+      freeList[freeList.length - 1].offset +
+        freeList[freeList.length - 1].size ===
+        newBlock.offset
+    ) {
+      freeList[freeList.length - 1].size += newBlock.size;
+    } else {
+      freeList.push(newBlock);
+    }
+  }
+}
+
 export class ChunkManager {
   chunkGeometryInfo: Map<string, ChunkGeometryInfo>;
 
-  // Make buffers public for access in debug renderer (simplest approach)
   public device: GPUDevice;
   public sharedVertexBuffer: GPUBuffer;
   public sharedIndexBuffer: GPUBuffer;
-  private sortedChunkGeometryInfoVertex: MemorySpaceInfo[];
-  private sortedChunkGeometryInfoIndex: MemorySpaceInfo[];
+
+  // Track used space using Maps for fast key lookup
+  private usedSpaceVertex: Map<string, MemorySpaceInfo>;
+  private usedSpaceIndex: Map<string, MemorySpaceInfo>;
+
+  // Track the end of the last appended block for fast append offset calculation
+  private maxVertexOffsetEnd: number;
+  private maxIndexOffsetEnd: number;
+
+  // Track free space (sorted by offset)
+  private freeSpaceVertex: FreeSpaceInfo[];
+  private freeSpaceIndex: FreeSpaceInfo[];
 
   constructor(
     device: GPUDevice,
@@ -65,8 +134,18 @@ export class ChunkManager {
     this.sharedVertexBuffer = sharedVertexBuffer;
     this.sharedIndexBuffer = sharedIndexBuffer;
     this.chunkGeometryInfo = new Map();
-    this.sortedChunkGeometryInfoVertex = [];
-    this.sortedChunkGeometryInfoIndex = [];
+
+    // Initialize used space maps
+    this.usedSpaceVertex = new Map();
+    this.usedSpaceIndex = new Map();
+
+    // Initialize append point trackers
+    this.maxVertexOffsetEnd = 0;
+    this.maxIndexOffsetEnd = 0;
+
+    // Initialize free space lists
+    this.freeSpaceVertex = [{ offset: 0, size: sharedVertexBuffer.size }];
+    this.freeSpaceIndex = [{ offset: 0, size: sharedIndexBuffer.size }];
   }
 
   getChunkGeometryInfo(position: vec3): ChunkGeometryInfo | undefined {
@@ -84,178 +163,203 @@ export class ChunkManager {
   ) {
     const key = getChunkKey(position);
 
-    console.log(
-      `addChunk START for key: ${key}, vertexSize: ${vertexSizeBytes}, indexSize: ${indexSizeBytes}, indexDataLength: ${
-        indexData?.byteLength ?? "null"
-      }`
-    );
-    console.log(
-      "Initial sortedChunkGeometryInfoVertex:",
-      this.sortedChunkGeometryInfoVertex
-    );
-    console.log(
-      "Initial sortedChunkGeometryInfoIndex:",
-      this.sortedChunkGeometryInfoIndex
-    );
+    // --- Add placeholder entry to map immediately with 'updating' status ---
+    // This ensures the key exists even if allocation/write fails,
+    // and renderer knows not to draw it yet.
+    // We'll update this entry later with correct offsets.
+    this.chunkGeometryInfo.set(key, {
+      indexCount: 0, // Placeholder
+      indexOffsetBytes: -1, // Placeholder
+      indexSizeBytes: indexSizeBytes,
+      indexData: indexData, // Keep data reference
+      vertexOffsetBytes: -1, // Placeholder
+      vertexSizeBytes: vertexSizeBytes,
+      vertexData: vertexData, // Keep data reference
+      aabb: aabb,
+      position: position,
+      firstIndex: -1, // Placeholder
+      baseVertex: -1, // Placeholder
+      status: "updating", // Start as updating
+    });
 
-    let foundVertex = false;
-    let vertexOffsetBytes = 0;
-    let i = 0;
-    for (; i < this.sortedChunkGeometryInfoVertex.length - 1; i++) {
-      const startOffset =
-        this.sortedChunkGeometryInfoVertex[i].offset +
-        this.sortedChunkGeometryInfoVertex[i].size;
-      const spaceLeft =
-        this.sortedChunkGeometryInfoVertex[i + 1].offset - startOffset;
+    let vertexOffsetBytes = -1;
+    let indexOffsetBytes = -1;
+    let usedExistingFreeVertexBlock = false;
+    let usedExistingFreeIndexBlock = false;
 
-      if (spaceLeft >= vertexSizeBytes) {
-        foundVertex = true;
-        vertexOffsetBytes = startOffset;
-        this.sortedChunkGeometryInfoVertex.splice(i + 1, 0, {
-          offset: vertexOffsetBytes,
-          size: vertexSizeBytes,
-          key,
-        });
+    // --- Allocate Vertex Space ---
+    for (let i = 0; i < this.freeSpaceVertex.length; i++) {
+      const freeBlock = this.freeSpaceVertex[i];
+      if (freeBlock.size >= vertexSizeBytes) {
+        vertexOffsetBytes = freeBlock.offset;
+        usedExistingFreeVertexBlock = true;
+        if (freeBlock.size === vertexSizeBytes) {
+          this.freeSpaceVertex.splice(i, 1);
+        } else {
+          freeBlock.offset += vertexSizeBytes;
+          freeBlock.size -= vertexSizeBytes;
+        }
         break;
       }
     }
-    if (!foundVertex) {
-      if (this.sortedChunkGeometryInfoVertex.length === 0) {
-        vertexOffsetBytes = 0;
-      } else {
-        const lastElementIndex = this.sortedChunkGeometryInfoVertex.length - 1;
-        vertexOffsetBytes =
-          this.sortedChunkGeometryInfoVertex[lastElementIndex].offset +
-          this.sortedChunkGeometryInfoVertex[lastElementIndex].size;
-      }
 
-      this.sortedChunkGeometryInfoVertex.push({
-        offset: vertexOffsetBytes,
-        size: vertexSizeBytes,
-        key,
-      });
+    // If no free space found, append
+    if (vertexOffsetBytes === -1) {
+      vertexOffsetBytes = this.maxVertexOffsetEnd; // Use the tracked end point
+      this.maxVertexOffsetEnd += vertexSizeBytes; // Increment for next append
     }
 
-    console.log(
-      "SortedChunkGeometryInfoVertex:",
-      JSON.stringify(this.sortedChunkGeometryInfoVertex)
-    );
+    // Store used block info in Map
+    const newUsedVertexBlock: MemorySpaceInfo = {
+      offset: vertexOffsetBytes,
+      size: vertexSizeBytes,
+      key,
+    };
+    this.usedSpaceVertex.set(key, newUsedVertexBlock);
 
-    console.log(
-      `[Before Vertex Write] Type: ${vertexData?.constructor?.name}, Offset: ${vertexOffsetBytes}, Data Size: ${vertexData?.byteLength}, Buffer Size: ${this.sharedVertexBuffer?.size}, Buffer State: ${this.sharedVertexBuffer?.mapState}`
-    );
+    // --- Allocate Index Space ---
+    for (let i = 0; i < this.freeSpaceIndex.length; i++) {
+      const freeBlock = this.freeSpaceIndex[i];
+      if (freeBlock.size >= indexSizeBytes) {
+        indexOffsetBytes = freeBlock.offset;
+        usedExistingFreeIndexBlock = true;
+        if (freeBlock.size === indexSizeBytes) {
+          this.freeSpaceIndex.splice(i, 1);
+        } else {
+          freeBlock.offset += indexSizeBytes;
+          freeBlock.size -= indexSizeBytes;
+        }
+        break;
+      }
+    }
+
+    // If no free space found, append
+    if (indexOffsetBytes === -1) {
+      indexOffsetBytes = this.maxIndexOffsetEnd; // Use tracked end point
+      this.maxIndexOffsetEnd += indexSizeBytes; // Increment for next append
+    }
+
+    // Store used block info in Map
+    const newUsedIndexBlock: MemorySpaceInfo = {
+      offset: indexOffsetBytes,
+      size: indexSizeBytes,
+      key,
+    };
+    this.usedSpaceIndex.set(key, newUsedIndexBlock);
+
+    // --- Error Handling Helper ---
+    // Function to clean up state if a write fails
+    const handleWriteError = (bufferType: "vertex" | "index") => {
+      console.error(
+        `Error during ${bufferType} write for chunk ${key}. Cleaning up.`
+      );
+      // Remove from used space maps
+      this.usedSpaceVertex.delete(key);
+      this.usedSpaceIndex.delete(key);
+      // Attempt to roll back allocation
+      if (usedExistingFreeVertexBlock) {
+        insertAndMergeFreeBlock(this.freeSpaceVertex, {
+          offset: vertexOffsetBytes,
+          size: vertexSizeBytes,
+        });
+      } else {
+        this.maxVertexOffsetEnd -= vertexSizeBytes;
+      }
+      if (usedExistingFreeIndexBlock) {
+        insertAndMergeFreeBlock(this.freeSpaceIndex, {
+          offset: indexOffsetBytes,
+          size: indexSizeBytes,
+        });
+      } else {
+        this.maxIndexOffsetEnd -= indexSizeBytes;
+      }
+      // Remove the preliminary entry from the main map
+      this.chunkGeometryInfo.delete(key);
+    };
+
+    // --- Write Data to Buffers ---
+    // Vertex Write
     if (
       vertexOffsetBytes + vertexData.byteLength >
       this.sharedVertexBuffer.size
     ) {
-      console.error("Attempting to write vertex data past buffer boundary!");
+      console.error(`Vertex write buffer overflow for key ${key}!`);
+      handleWriteError("vertex");
+      return;
     }
-    this.device.queue.writeBuffer(
-      this.sharedVertexBuffer,
-      vertexOffsetBytes,
-      vertexData,
-      0,
-      vertexData.length
-    );
-
-    let foundIndex = false;
-    let indexOffsetBytes = 0;
-    i = 0;
-    for (; i < this.sortedChunkGeometryInfoIndex.length - 1; i++) {
-      const startOffset =
-        this.sortedChunkGeometryInfoIndex[i].offset +
-        this.sortedChunkGeometryInfoIndex[i].size;
-      const spaceLeft =
-        this.sortedChunkGeometryInfoIndex[i + 1].offset - startOffset;
-
-      if (spaceLeft >= indexSizeBytes) {
-        foundIndex = true;
-        indexOffsetBytes = startOffset;
-        this.sortedChunkGeometryInfoIndex.splice(i + 1, 0, {
-          offset: indexOffsetBytes,
-          size: indexSizeBytes,
-          key,
-        });
-        break;
+    try {
+      if (vertexData.byteLength > 0) {
+        this.device.queue.writeBuffer(
+          this.sharedVertexBuffer,
+          vertexOffsetBytes,
+          vertexData,
+          0,
+          vertexData.length
+        );
       }
-    }
-    if (!foundIndex) {
-      if (this.sortedChunkGeometryInfoIndex.length === 0) {
-        indexOffsetBytes = 0;
-      } else {
-        const lastElementIndex = this.sortedChunkGeometryInfoIndex.length - 1;
-        indexOffsetBytes =
-          this.sortedChunkGeometryInfoIndex[lastElementIndex].offset +
-          this.sortedChunkGeometryInfoIndex[lastElementIndex].size;
-      }
-
-      this.sortedChunkGeometryInfoIndex.push({
-        offset: indexOffsetBytes,
-        size: indexSizeBytes,
-        key,
-      });
+    } catch (error) {
+      console.error(
+        `Caught exception during vertex writeBuffer for ${key}:`,
+        error
+      );
+      handleWriteError("vertex");
+      return;
     }
 
-    console.log(
-      "SortedChunkGeometryInfoIndex:",
-      this.sortedChunkGeometryInfoIndex
-    );
-
-    console.log(
-      `[Before Index Write] Type: ${indexData?.constructor?.name}, Offset: ${indexOffsetBytes}, Data Size: ${indexData?.byteLength}, Buffer Size: ${this.sharedIndexBuffer?.size}, Buffer State: ${this.sharedIndexBuffer?.mapState}`
-    );
+    // Index Write
     if (indexOffsetBytes + indexData.byteLength > this.sharedIndexBuffer.size) {
-      console.error("Attempting to write index data past buffer boundary!");
+      console.error(`Index write buffer overflow for key ${key}!`);
+      handleWriteError("index"); // Also roll back vertex allocation here
+      return;
     }
-    if (indexData.byteLength > 0) {
-      this.device.queue.writeBuffer(
-        this.sharedIndexBuffer,
-        indexOffsetBytes,
-        indexData,
-        0,
-        indexData.length
+    try {
+      if (indexData.byteLength > 0) {
+        this.device.queue.writeBuffer(
+          this.sharedIndexBuffer,
+          indexOffsetBytes,
+          indexData,
+          0,
+          indexData.length
+        );
+      }
+    } catch (error) {
+      console.error(
+        `Caught exception during index writeBuffer for ${key}:`,
+        error
       );
-    } else {
-      console.warn(
-        `Index data for chunk ${key} is empty. Skipping index write.`
-      );
+      handleWriteError("index");
+      return;
     }
+    // --- End Write Data ---
 
+    // Calculate firstIndex and baseVertex
     const firstIndex =
       indexData.byteLength > 0 ? indexOffsetBytes / INDEX_SIZE_BYTES : 0;
     const baseVertex =
       vertexData.byteLength > 0 ? vertexOffsetBytes / VERTEX_STRIDE_BYTES : 0;
+    if (firstIndex % 1 !== 0)
+      console.warn(`Non-integer firstIndex: ${firstIndex}`);
+    if (baseVertex % 1 !== 0)
+      console.warn(`Non-integer baseVertex: ${baseVertex}`);
 
-    if (firstIndex % 1 !== 0) {
-      console.warn(
-        `Calculated firstIndex (${firstIndex}) is not an integer. indexOffsetBytes=${indexOffsetBytes}, INDEX_SIZE_BYTES=${INDEX_SIZE_BYTES}`
-      );
+    // --- Update the placeholder geometry info in the map ---
+    // !! DO NOT set status to ready here !!
+    const finalChunkInfo = this.chunkGeometryInfo.get(key);
+    if (finalChunkInfo) {
+      finalChunkInfo.indexCount = indexData.length;
+      finalChunkInfo.indexOffsetBytes = indexOffsetBytes;
+      finalChunkInfo.vertexOffsetBytes = vertexOffsetBytes;
+      finalChunkInfo.firstIndex = firstIndex;
+      finalChunkInfo.baseVertex = baseVertex;
+      // finalChunkInfo.status remains 'updating'
+    } else {
+      console.error(`Chunk info for key ${key} missing after allocation!`);
     }
-    if (baseVertex % 1 !== 0) {
-      console.warn(
-        `Calculated baseVertex (${baseVertex}) is not an integer. vertexOffsetBytes=${vertexOffsetBytes}, VERTEX_STRIDE_BYTES=${VERTEX_STRIDE_BYTES}`
-      );
-    }
-
-    this.chunkGeometryInfo.set(key, {
-      indexCount: indexData.length,
-      indexOffsetBytes,
-      indexSizeBytes,
-      indexData,
-      vertexOffsetBytes,
-      vertexSizeBytes,
-      vertexData,
-      aabb,
-      position,
-      firstIndex,
-      baseVertex,
-    });
   }
 
   deleteChunk(position: vec3) {
-    const key = getChunkKey(position);
     this.freeChunkGeometryInfo(position);
-    this.chunkGeometryInfo.delete(key);
+    this.chunkGeometryInfo.delete(getChunkKey(position));
   }
 
   updateChunkGeometryInfo(
@@ -267,37 +371,235 @@ export class ChunkManager {
     aabb: { min: vec3; max: vec3 }
   ) {
     const key = getChunkKey(position);
+    const existingChunkInfo = this.chunkGeometryInfo.get(key);
 
-    if (this.chunkGeometryInfo.has(key)) {
-      this.freeChunkGeometryInfo(position);
+    if (!existingChunkInfo) {
+      console.warn(
+        `updateChunkGeometryInfo called for non-existent key ${key}. Adding instead.`
+      );
+      this.addChunk(
+        position,
+        vertexData,
+        vertexSizeBytes,
+        indexData,
+        indexSizeBytes,
+        aabb
+      );
+      return;
     }
 
-    this.addChunk(
-      position,
-      vertexData,
-      vertexSizeBytes,
-      indexData,
-      indexSizeBytes,
-      aabb
-    );
+    existingChunkInfo.status = "updating";
+    existingChunkInfo.position = position;
+    existingChunkInfo.aabb = aabb;
+    existingChunkInfo.vertexData = vertexData;
+    existingChunkInfo.indexData = indexData;
+    existingChunkInfo.vertexSizeBytes = vertexSizeBytes;
+    existingChunkInfo.indexSizeBytes = indexSizeBytes;
+
+    // Store old offsets/sizes before freeing
+    const oldVertexOffset = existingChunkInfo.vertexOffsetBytes;
+    const oldVertexSize = this.usedSpaceVertex.get(key)?.size;
+    const oldIndexOffset = existingChunkInfo.indexOffsetBytes;
+    const oldIndexSize = this.usedSpaceIndex.get(key)?.size;
+
+    // Free old vertex space
+    if (oldVertexSize !== undefined) {
+      if (this.usedSpaceVertex.delete(key)) {
+        insertAndMergeFreeBlock(this.freeSpaceVertex, {
+          offset: oldVertexOffset,
+          size: oldVertexSize,
+        });
+      } else {
+        console.warn(`[Update] Vertex delete failed for ${key}`);
+      }
+    } else if (oldVertexOffset !== -1) {
+      console.warn(
+        `[Update] oldVertexSize undefined but offset existed for ${key}`
+      );
+    }
+
+    // Free old index space
+    if (oldIndexSize !== undefined) {
+      if (this.usedSpaceIndex.delete(key)) {
+        insertAndMergeFreeBlock(this.freeSpaceIndex, {
+          offset: oldIndexOffset,
+          size: oldIndexSize,
+        });
+      } else {
+        console.warn(`[Update] Index delete failed for ${key}`);
+      }
+    } else if (oldIndexOffset !== -1) {
+      console.warn(
+        `[Update] oldIndexSize undefined but offset existed for ${key}`
+      );
+    }
+
+    // Allocate NEW space
+    let vertexOffsetBytes = -1;
+    let indexOffsetBytes = -1;
+    let usedExistingFreeVertexBlock = false;
+    let usedExistingFreeIndexBlock = false;
+
+    // Vertex allocation (find free or append)
+    for (let i = 0; i < this.freeSpaceVertex.length; i++) {
+      const freeBlock = this.freeSpaceVertex[i];
+      if (freeBlock.size >= vertexSizeBytes) {
+        vertexOffsetBytes = freeBlock.offset;
+        usedExistingFreeVertexBlock = true;
+        if (freeBlock.size === vertexSizeBytes)
+          this.freeSpaceVertex.splice(i, 1);
+        else {
+          freeBlock.offset += vertexSizeBytes;
+          freeBlock.size -= vertexSizeBytes;
+        }
+        break;
+      }
+    }
+    if (vertexOffsetBytes === -1) {
+      vertexOffsetBytes = this.maxVertexOffsetEnd;
+      this.maxVertexOffsetEnd += vertexSizeBytes;
+    }
+    this.usedSpaceVertex.set(key, {
+      offset: vertexOffsetBytes,
+      size: vertexSizeBytes,
+      key,
+    });
+
+    // Index allocation (find free or append)
+    for (let i = 0; i < this.freeSpaceIndex.length; i++) {
+      const freeBlock = this.freeSpaceIndex[i];
+      if (freeBlock.size >= indexSizeBytes) {
+        indexOffsetBytes = freeBlock.offset;
+        usedExistingFreeIndexBlock = true;
+        if (freeBlock.size === indexSizeBytes) this.freeSpaceIndex.splice(i, 1);
+        else {
+          freeBlock.offset += indexSizeBytes;
+          freeBlock.size -= indexSizeBytes;
+        }
+        break;
+      }
+    }
+    if (indexOffsetBytes === -1) {
+      indexOffsetBytes = this.maxIndexOffsetEnd;
+      this.maxIndexOffsetEnd += indexSizeBytes;
+    }
+    this.usedSpaceIndex.set(key, {
+      offset: indexOffsetBytes,
+      size: indexSizeBytes,
+      key,
+    });
+
+    // Error Handling Helper
+    const handleUpdateWriteError = (bufferType: "vertex" | "index") => {
+      console.error(
+        `Error during ${bufferType} write for UPDATED chunk ${key}. State might be inconsistent.`
+      );
+      existingChunkInfo.status = "updating";
+    };
+
+    // Queue Write operations for the NEW data
+    // Vertex Write
+    if (
+      vertexOffsetBytes + vertexData.byteLength >
+      this.sharedVertexBuffer.size
+    ) {
+      console.error(`[Update] Vertex write buffer overflow for key ${key}!`);
+      handleUpdateWriteError("vertex");
+      return;
+    }
+    try {
+      if (vertexData.byteLength > 0)
+        this.device.queue.writeBuffer(
+          this.sharedVertexBuffer,
+          vertexOffsetBytes,
+          vertexData,
+          0,
+          vertexData.length
+        );
+    } catch (error) {
+      console.error("[Update] Vertex write error:", error);
+      handleUpdateWriteError("vertex");
+      return;
+    }
+
+    // Index Write
+    if (indexOffsetBytes + indexData.byteLength > this.sharedIndexBuffer.size) {
+      console.error(`[Update] Index write buffer overflow for key ${key}!`);
+      handleUpdateWriteError("index");
+      return;
+    }
+    try {
+      if (indexData.byteLength > 0)
+        this.device.queue.writeBuffer(
+          this.sharedIndexBuffer,
+          indexOffsetBytes,
+          indexData,
+          0,
+          indexData.length
+        );
+    } catch (error) {
+      console.error("[Update] Index write error:", error);
+      handleUpdateWriteError("index");
+      return;
+    }
+
+    // Update existing chunkInfo with final details
+    // !! DO NOT set status to ready here !!
+    const finalFirstIndex =
+      indexData.byteLength > 0 ? indexOffsetBytes / INDEX_SIZE_BYTES : 0;
+    const finalBaseVertex =
+      vertexData.byteLength > 0 ? vertexOffsetBytes / VERTEX_STRIDE_BYTES : 0;
+    if (finalFirstIndex % 1 !== 0)
+      console.warn(`[Update] Non-integer firstIndex: ${finalFirstIndex}`);
+    if (finalBaseVertex % 1 !== 0)
+      console.warn(`[Update] Non-integer baseVertex: ${finalBaseVertex}`);
+
+    existingChunkInfo.indexCount = indexData.length;
+    existingChunkInfo.indexOffsetBytes = indexOffsetBytes;
+    existingChunkInfo.vertexOffsetBytes = vertexOffsetBytes;
+    existingChunkInfo.firstIndex = finalFirstIndex;
+    existingChunkInfo.baseVertex = finalBaseVertex;
+    // existingChunkInfo.status remains 'updating'
   }
 
   freeChunkGeometryInfo(position: vec3) {
     const key = getChunkKey(position);
-    const removed = this.chunkGeometryInfo.delete(key);
+    const chunkInfo = this.chunkGeometryInfo.get(key);
 
-    if (removed) {
-      let index: number;
-      index = this.sortedChunkGeometryInfoVertex.findIndex(
-        (v) => v.key === key
+    if (!chunkInfo) {
+      // Don't warn if just updating non-existent, could be intentional
+      // console.warn(`Attempted to free non-existent chunk: ${key}`);
+      return; // Chunk doesn't exist
+    }
+
+    // 1. Remove from chunkGeometryInfo map
+    this.chunkGeometryInfo.delete(key);
+
+    // 2. Get used block info from Maps, remove, add/merge to freeSpace
+    const usedVertexBlock = this.usedSpaceVertex.get(key);
+    if (usedVertexBlock) {
+      this.usedSpaceVertex.delete(key); // Remove from map
+      insertAndMergeFreeBlock(this.freeSpaceVertex, {
+        offset: usedVertexBlock.offset,
+        size: usedVertexBlock.size,
+      });
+    } else {
+      console.warn(
+        `Could not find vertex block for key ${key} in usedSpaceVertex map during free.`
       );
-      if (index !== -1) {
-        this.sortedChunkGeometryInfoVertex.splice(index, 1);
-      }
-      index = this.sortedChunkGeometryInfoIndex.findIndex((v) => v.key === key);
-      if (index !== -1) {
-        this.sortedChunkGeometryInfoIndex.splice(index, 1);
-      }
+    }
+
+    const usedIndexBlock = this.usedSpaceIndex.get(key);
+    if (usedIndexBlock) {
+      this.usedSpaceIndex.delete(key); // Remove from map
+      insertAndMergeFreeBlock(this.freeSpaceIndex, {
+        offset: usedIndexBlock.offset,
+        size: usedIndexBlock.size,
+      });
+    } else {
+      console.warn(
+        `Could not find index block for key ${key} in usedSpaceIndex map during free.`
+      );
     }
   }
 }
