@@ -1,5 +1,5 @@
 import { mat4, vec3, vec4 } from "gl-matrix";
-import type { ChunkMesh } from "./chunk";
+import { ChunkManager, type ChunkGeometryInfo } from "./chunk-manager";
 import { drawDebugLines, generateDebugLineVertices } from "./renderer.debug";
 import { extractFrustumPlanes } from "./renderer.util";
 
@@ -14,6 +14,11 @@ const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initiall
 const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
 const CROSSHAIR_NDC_SIZE = 0.02; // Base size of the crosshair in NDC units (applied vertically)
 const CROSSHAIR_COLOR = [1.0, 1.0, 1.0]; // White
+const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 128; // Example: 128MB (Increased from 64MB)
+const INITIAL_SHARED_INDEX_BUFFER_SIZE = 1024 * 1024 * 64;  // Example: 64MB (Increased from 32MB - good idea to increase this too)
+const VERTEX_STRIDE_BYTES = 9 * Float32Array.BYTES_PER_ELEMENT; // Matches voxelVertexBufferLayout
+const INDEX_FORMAT: GPUIndexFormat = "uint32";
+const INDEX_SIZE_BYTES = 4; // Based on uint32
 
 // @ts-ignore
 import voxelShaderCode from "./shaders/voxel.wsgl" with { type: "text" };
@@ -61,6 +66,9 @@ export class Renderer {
     totalTriangles: number;
     culledChunks: number;
   };
+  public chunkManager: ChunkManager;
+  public sharedVertexBuffer: GPUBuffer;
+  public sharedIndexBuffer: GPUBuffer;
   private canvasWidth = 0;
   private canvasHeight = 0;
   private aspect = 1.0; // Added aspect ratio state
@@ -80,7 +88,10 @@ export class Renderer {
     debugLineBufferSize: number,
     highlightVertexBuffer: GPUBuffer,
     crosshairVertexBuffer: GPUBuffer,
-    crosshairVertexCount: number
+    crosshairVertexCount: number,
+    chunkManager: ChunkManager,
+    sharedVertexBuffer: GPUBuffer,
+    sharedIndexBuffer: GPUBuffer
   ) {
     this.device = device;
     this.context = context;
@@ -98,6 +109,9 @@ export class Renderer {
     this.highlightVertexBufferSize = INITIAL_HIGHLIGHT_BUFFER_SIZE;
     this.crosshairVertexBuffer = crosshairVertexBuffer;
     this.crosshairVertexCount = crosshairVertexCount;
+    this.chunkManager = chunkManager;
+    this.sharedVertexBuffer = sharedVertexBuffer;
+    this.sharedIndexBuffer = sharedIndexBuffer;
 
     // Initialize aspect ratio
     this.canvasWidth = this.context.canvas.width;
@@ -190,6 +204,21 @@ export class Renderer {
     const linePipeline = Renderer.createLinePipeline(device, presentationFormat, pipelineLayout);
     const highlightPipeline = Renderer.createHighlightPipeline(device, presentationFormat, pipelineLayout);
 
+    // --- Create Shared Buffers ---
+    const sharedVertexBuffer = device.createBuffer({
+        label: "Shared Vertex Buffer",
+        size: INITIAL_SHARED_VERTEX_BUFFER_SIZE,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    const sharedIndexBuffer = device.createBuffer({
+        label: "Shared Index Buffer",
+        size: INITIAL_SHARED_INDEX_BUFFER_SIZE,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+
+    // --- Create Chunk Manager ---
+    const chunkManager = new ChunkManager(device, sharedVertexBuffer, sharedIndexBuffer);
+
     // --- Buffers (Debug, Highlight, Crosshair) ---
     const debugLineBuffer = device.createBuffer({
       label: "Debug Line Buffer",
@@ -232,7 +261,10 @@ export class Renderer {
       INITIAL_DEBUG_LINE_BUFFER_SIZE,
       highlightVertexBuffer,
       crosshairVertexBuffer,
-      crosshairVertexCount
+      crosshairVertexCount,
+      chunkManager,
+      sharedVertexBuffer,
+      sharedIndexBuffer
     );
 
     // Write initial crosshair data *after* Renderer creation
@@ -476,28 +508,32 @@ export class Renderer {
 
   private drawVoxelScene(
     passEncoder: GPURenderPassEncoder,
-    chunkMeshes: Map<string, ChunkMesh>,
-    cullingFn: (mesh: ChunkMesh) => boolean
-  ): { drawnChunks: number; culledChunks: number; totalTriangles: number } {
+    visibleChunkInfos: ChunkGeometryInfo[]
+  ): { drawnChunks: number; totalTriangles: number } {
+    if (visibleChunkInfos.length === 0) {
+        return { drawnChunks: 0, totalTriangles: 0 };
+    }
+
     passEncoder.setPipeline(this.voxelPipeline);
-    passEncoder.setBindGroup(0, this.bindGroup); // Uses current VP matrix in buffer
+    passEncoder.setBindGroup(0, this.bindGroup);
+
+    // Set the shared buffers ONCE
+    passEncoder.setVertexBuffer(0, this.sharedVertexBuffer);
+    passEncoder.setIndexBuffer(this.sharedIndexBuffer, INDEX_FORMAT); // Use constant for format
 
     let totalTriangles = 0;
     let drawnChunks = 0;
-    let culledChunks = 0;
 
-    for (const mesh of chunkMeshes.values()) {
-      if (cullingFn(mesh)) {
-        passEncoder.setVertexBuffer(0, mesh.vertexBuffer);
-        passEncoder.setIndexBuffer(mesh.indexBuffer, "uint32");
-        passEncoder.drawIndexed(mesh.indexCount);
-        totalTriangles += mesh.indexCount / 3;
-        drawnChunks++;
-      } else {
-        culledChunks++;
-      }
+    // Draw all visible chunks using offsets
+    for (const info of visibleChunkInfos) {
+      // Use firstIndex and baseVertex for drawing sub-ranges
+      passEncoder.drawIndexed(info.indexCount, 1, info.firstIndex, info.baseVertex, 0);
+      totalTriangles += info.indexCount / 3;
+      drawnChunks++;
     }
-    return { drawnChunks, culledChunks, totalTriangles };
+
+    // Return only drawn count and triangles, culling happened before this call
+    return { drawnChunks, totalTriangles };
   }
 
   // --- Render Frame ---
@@ -505,7 +541,6 @@ export class Renderer {
     cameraPosition: vec3,
     cameraPitch: number,
     cameraYaw: number,
-    chunkMeshes: Map<string, ChunkMesh>,
     highlightedBlockPositions: vec3[],
     fov: number,
     debugCamera?: {
@@ -539,7 +574,6 @@ export class Renderer {
     }
 
     // --- Select and Write the Correct VP Matrix BEFORE the Render Pass ---
-    // Use debug VP if debug view is active, otherwise use main VP
     const activeVpMatrix = debugCamera ? this.vpMatrixDebug : this.vpMatrix;
     this.device.queue.writeBuffer(this.uniformBuffer, 0, activeVpMatrix as Float32Array);
 
@@ -564,21 +598,32 @@ export class Renderer {
       },
     });
 
-    // --- Draw Voxel Scene (uses the VP matrix written before the pass) ---
-    // Frustum culling should use the *main* camera's VP matrix, regardless of debug view
-    const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
-    const sceneStats = this.drawVoxelScene(
-      passEncoder,
-      chunkMeshes,
-      (mesh) => Renderer.intersectFrustumAABB(frustumPlanes, mesh.aabb)
-    );
-    this.debugInfo.totalChunks = chunkMeshes.size;
+    // --- Cull Chunks and Prepare Visible List ---
+    const frustumPlanes = extractFrustumPlanes(this.vpMatrix); // Use main camera for culling
+    const visibleChunkInfos: ChunkGeometryInfo[] = [];
+    let culledChunks = 0;
+    const allChunkInfos = this.chunkManager.chunkGeometryInfo.values(); // Get infos from manager
+
+    for (const info of allChunkInfos) {
+      // Assuming ChunkGeometryInfo has an 'aabb' property
+      if (Renderer.intersectFrustumAABB(frustumPlanes, info.aabb)) {
+        visibleChunkInfos.push(info);
+      } else {
+        culledChunks++;
+      }
+    }
+
+    // --- Draw Voxel Scene ---
+    const sceneStats = this.drawVoxelScene(passEncoder, visibleChunkInfos);
+
+    // Update debug info based on culling results and draw stats
+    this.debugInfo.totalChunks = this.chunkManager.chunkGeometryInfo.size;
     this.debugInfo.drawnChunks = sceneStats.drawnChunks;
-    this.debugInfo.culledChunks = sceneStats.culledChunks;
+    this.debugInfo.culledChunks = culledChunks; // Use count from the culling loop
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
 
+
     // --- Prepare and Draw Highlights ---
-    // Highlights should respect the currently active view (main or debug)
     let totalHighlightVertices = 0;
     if (highlightedBlockPositions.length > 0) {
         const numberOfHighlightedCubes = highlightedBlockPositions.length;
@@ -605,35 +650,34 @@ export class Renderer {
     }
 
 
-    if (enableDebugView) {
+    if (enableDebugView && ENABLE_CHUNK_DEBUG_LINES) {
+        // Use the same active VP matrix as the main scene/highlights for debug lines
         this.device.queue.writeBuffer(this.uniformBuffer, 0, activeVpMatrix as Float32Array);
 
-        if (ENABLE_CHUNK_DEBUG_LINES) {
-            const lineData = generateDebugLineVertices(
-              this,
-              chunkMeshes,
-              frustumPlanes,
-              worldFrustumCorners,
-              cameraPosition
-            );
-            // Ensure buffer is large enough (or resize)
-            if (lineData.byteLength > this.debugLineBufferSize) {
-                this.debugLineBuffer.destroy();
-                this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
-                this.debugLineBuffer = this.device.createBuffer({
-                      label: "Debug Line Buffer (Resized)",
-                      size: this.debugLineBufferSize,
-                      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-                  });
-                  console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
-            }
-            this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData); // Write debug line data
-
-            drawDebugLines(passEncoder, this, lineData); // drawDebugLines sets pipeline and binds (uses current uniformBuffer)
+        // Pass the chunkManager to generateDebugLineVertices
+        const lineData = generateDebugLineVertices(
+          this.chunkManager, // Pass ChunkManager instance
+          frustumPlanes,
+          worldFrustumCorners,
+          cameraPosition
+        );
+        // ... existing debug line buffer resize and write ...
+        if (lineData.byteLength > this.debugLineBufferSize) {
+            this.debugLineBuffer.destroy();
+            this.debugLineBufferSize = Math.max(this.debugLineBufferSize * 2, lineData.byteLength);
+            this.debugLineBuffer = this.device.createBuffer({
+                  label: "Debug Line Buffer (Resized)",
+                  size: this.debugLineBufferSize,
+                  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+              });
+              console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
         }
+        this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData);
+
+        drawDebugLines(passEncoder, this, lineData);
     }
 
-    // --- Draw Crosshair (using IDENTITY matrix, always drawn last in UI space) ---
+    // --- Draw Crosshair ---
     const identityMatrix = mat4.create(); // Create identity matrix
     this.device.queue.writeBuffer(this.uiUniformBuffer, 0, identityMatrix as Float32Array); // Use uiUniformBuffer
 
@@ -643,10 +687,12 @@ export class Renderer {
     passEncoder.setVertexBuffer(0, this.crosshairVertexBuffer);
     passEncoder.draw(this.crosshairVertexCount);   // Draw the 4 vertices (2 lines)
 
+
     // --- Finish Up ---
     passEncoder.end();
     this.device.queue.submit([commandEncoder.finish()]);
 
+    // Return overall stats
     return {
       totalTriangles: sceneStats.totalTriangles,
       drawnChunks: sceneStats.drawnChunks,

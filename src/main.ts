@@ -38,11 +38,10 @@ const FACE_NORMALS = {
 };
 
 // --- Global State ---
-const chunkMeshes = new Map<string, ChunkMesh>();
 const loadedChunkData = new Map<string, Uint8Array>();
 const requestedChunkKeys = new Set<string>();
 const playerState = new PlayerState();
-let rendererState: Renderer | null = null; // Will be initialized later
+let rendererState: Renderer; // Will be initialized later
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
@@ -161,49 +160,25 @@ async function main() {
 
       // Update the chunk mesh
       const key = getChunkKey(position);
-      const oldChunkMesh = chunkMeshes.get(key);
 
-      // Create new vertex buffer
-      const newVertexBuffer = rendererState.device.createBuffer({
-        label: `chunk-${position[0]}-${position[1]}-${position[2]}-vertex`,
-        size: vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
-      rendererState.device.queue.writeBuffer(newVertexBuffer, 0, vertices);
-
-      // Create new index buffer
-      const newIndexBuffer = rendererState.device.createBuffer({
-        label: `chunk-${position[0]}-${position[1]}-${position[2]}-index`,
-        size: indices.byteLength,
-        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      });
-      rendererState.device.queue.writeBuffer(newIndexBuffer, 0, indices);
-
-      if (oldChunkMesh) {
-        oldChunkMesh.vertexBuffer.destroy();
-        oldChunkMesh.indexBuffer.destroy();
-
-        oldChunkMesh.vertexBuffer = newVertexBuffer;
-        oldChunkMesh.indexBuffer = newIndexBuffer;
-        oldChunkMesh.indexCount = indices.length;
-      } else {
-        const minX = position[0] * CHUNK_SIZE_X;
-        const minY = position[1] * CHUNK_SIZE_Y;
-        const minZ = position[2] * CHUNK_SIZE_Z;
-        const maxX = minX + CHUNK_SIZE_X;
-        const maxY = minY + CHUNK_SIZE_Y;
-        const maxZ = minZ + CHUNK_SIZE_Z;
-        chunkMeshes.set(key, {
-          position: position,
-          vertexBuffer: newVertexBuffer,
-          indexBuffer: newIndexBuffer,
-          indexCount: indices.length,
-          aabb: {
-            min: vec3.fromValues(minX, minY, minZ),
-            max: vec3.fromValues(maxX, maxY, maxZ),
-          },
-        });
-      }
+      const minX = position[0] * CHUNK_SIZE_X;
+      const minY = position[1] * CHUNK_SIZE_Y;
+      const minZ = position[2] * CHUNK_SIZE_Z;
+      const maxX = minX + CHUNK_SIZE_X;
+      const maxY = minY + CHUNK_SIZE_Y;
+      const maxZ = minZ + CHUNK_SIZE_Z;
+      const aabb = {
+        min: vec3.fromValues(minX, minY, minZ),
+        max: vec3.fromValues(maxX, maxY, maxZ),
+      };
+      rendererState.chunkManager.updateChunkGeometryInfo(
+        position,
+        vertices,
+        vertices.byteLength,
+        indices,
+        indices.byteLength,
+        aabb
+      );
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
@@ -371,7 +346,10 @@ async function main() {
   const unloadChunks = () => {
     const playerChunk = getChunkOfPosition(playerState.position);
 
-    for (const [key, chunkMesh] of chunkMeshes.entries()) {
+    for (const [
+      key,
+      chunkMesh,
+    ] of rendererState.chunkManager.chunkGeometryInfo.entries()) {
       const dx = Math.abs(chunkMesh.position[0] - playerChunk[0]);
       const dy = Math.abs(chunkMesh.position[1] - playerChunk[1]);
       const dz = Math.abs(chunkMesh.position[2] - playerChunk[2]);
@@ -381,7 +359,7 @@ async function main() {
         dz > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ
       ) {
         log("Main", `Unloading chunk: ${key}`);
-        chunkMeshes.delete(key);
+        rendererState.chunkManager.deleteChunk(chunkMesh.position);
         loadedChunkData.delete(key);
         requestedChunkKeys.delete(key);
       }
@@ -431,7 +409,6 @@ async function main() {
       playerState.getCameraPosition(),
       cameraPitch,
       cameraYaw,
-      chunkMeshes,
       highlightedBlockPositions,
       fov,
       debugCameraEnabled
@@ -504,7 +481,9 @@ Chunk:  (${playerChunk[0]}, ${playerChunk[1]}, ${playerChunk[2]})
 Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(
         2
       )}, ${lookDirection[2].toFixed(2)})
-Chunks: ${chunkMeshes.size} (${requestedChunkKeys.size} req)
+Chunks: ${rendererState.chunkManager.chunkGeometryInfo.size} (${
+        requestedChunkKeys.size
+      } req)
 Drawn:  ${rendererState.debugInfo.drawnChunks}
 Culled: ${rendererState.debugInfo.culledChunks}
 Tris:   ${lastTotalTriangles.toLocaleString()}

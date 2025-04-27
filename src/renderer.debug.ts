@@ -9,6 +9,7 @@ import {
   Renderer,
 } from "./renderer";
 import { getPlayerAABB } from "./renderer.util";
+import type { ChunkManager } from "./chunk-manager";
 
 /** Adds line vertices for the 12 edges of a frustum defined by its 8 corners */
 export function addFrustumLineVertices(
@@ -57,8 +58,7 @@ export function addFrustumLineVertices(
   }
 } /** Generates the Float32Array vertex data for all debug lines */
 export function generateDebugLineVertices(
-  renderer: Renderer,
-  chunkMeshes: Map<string, ChunkMesh>,
+  chunkManager: ChunkManager,
   frustumPlanes: Plane[],
   worldFrustumCorners: vec3[],
   cameraPosition: vec3
@@ -66,11 +66,11 @@ export function generateDebugLineVertices(
   const lineVertices: number[] = [];
 
   // Generate lines for ALL culled/drawn chunks (based on FP camera)
-  for (const mesh of chunkMeshes.values()) {
-    const intersects = Renderer.intersectFrustumAABB(frustumPlanes, mesh.aabb);
+  for (const info of chunkManager.chunkGeometryInfo.values()) {
+    const intersects = Renderer.intersectFrustumAABB(frustumPlanes, info.aabb);
     addAABBLineVertices(
       lineVertices,
-      mesh.aabb,
+      info.aabb,
       intersects ? DEBUG_COLOR_DRAWN : DEBUG_COLOR_CULLED
     );
   }
