@@ -155,7 +155,7 @@ export class Terrain {
     };
     const chunk = new Chunk(position);
 
-    const config = terrainConfigs.crazy;
+    const config = terrainConfigs.normal;
     const {
       overallAmplitude,
       baseHeight,
@@ -219,7 +219,10 @@ export class Terrain {
 
           // --- Cave Carving (only affects blocks below surface) ---
           if (worldY <= height) {
-            if (this.tunnelCaves(worldX, worldY, worldZ)) {
+            if (
+              this.tunnelCaves(worldX, worldY, worldZ) ||
+              this.epicCaves(worldX, worldY, worldZ)
+            ) {
               chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
             }
           }

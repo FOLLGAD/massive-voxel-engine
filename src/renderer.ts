@@ -14,20 +14,20 @@ const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initiall
 const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
 const CROSSHAIR_NDC_SIZE = 0.02; // Base size of the crosshair in NDC units (applied vertically)
 const CROSSHAIR_COLOR = [1.0, 1.0, 1.0]; // White
-const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 512; // Example: 512MB (Increased from 64MB)
-const INITIAL_SHARED_INDEX_BUFFER_SIZE = 1024 * 1024 * 256;  // Example: 256MB (Increased from 64MB)
+const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1GB
+const INITIAL_SHARED_INDEX_BUFFER_SIZE = 256 * 1024 * 1024;  // 256MB
 const INDEX_FORMAT: GPUIndexFormat = "uint32";
 
 // @ts-ignore
-import voxelShaderCode from "./shaders/voxel.wsgl" with { type: "text" };
+import voxelShaderCode from "./shaders/voxel.wgsl" with { type: "text" };
 // @ts-ignore
-import lineShaderCode from "./shaders/line.wsgl" with { type: "text" };
+import lineShaderCode from "./shaders/line.wgsl" with { type: "text" };
 // @ts-ignore
-import highlightShaderCode from "./shaders/highlight.wsgl" with { type: "text" };
+import highlightShaderCode from "./shaders/highlight.wgsl" with { type: "text" };
 // @ts-ignore
-import cullChunksShader from "./shaders/cullChunks.wsgl" with { type: "text" };
+import cullChunksShader from "./shaders/cullChunks.wgsl" with { type: "text" };
 // @ts-ignore
-import skyShaderCode from "./shaders/sky.wsgl" with { type: "text" }; // Import the sky shader
+import skyShaderCode from "./shaders/sky.wgsl" with { type: "text" }; // Import the sky shader
 
 // --- Frustum Culling Types ---
 /** Represents a plane equation: Ax + By + Cz + D = 0 */
@@ -163,7 +163,7 @@ export class Renderer {
     }
     const device = await adapter.requestDevice({
       requiredLimits: {
-        maxBufferSize: 1024 * 1024 * 1024, // 1GB
+        maxBufferSize: 1024 * 1024 * 1024 * 2, // 2GB
       }
     });
     const context = canvas.getContext("webgpu");
