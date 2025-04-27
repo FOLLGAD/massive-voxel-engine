@@ -14,8 +14,8 @@ const INITIAL_HIGHLIGHT_BUFFER_SIZE = 1024 * 6; // Enough for ~42 cubes initiall
 const HIGHLIGHT_COLOR = [1.0, 1.0, 0.0]; // Yellow
 const CROSSHAIR_NDC_SIZE = 0.02; // Base size of the crosshair in NDC units (applied vertically)
 const CROSSHAIR_COLOR = [1.0, 1.0, 1.0]; // White
-const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 256; // Example: 256MB (Increased from 64MB)
-const INITIAL_SHARED_INDEX_BUFFER_SIZE = 1024 * 1024 * 128;  // Example: 128MB (Increased from 64MB)
+const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 512; // Example: 512MB (Increased from 64MB)
+const INITIAL_SHARED_INDEX_BUFFER_SIZE = 1024 * 1024 * 256;  // Example: 256MB (Increased from 64MB)
 const INDEX_FORMAT: GPUIndexFormat = "uint32";
 
 // @ts-ignore
@@ -147,7 +147,11 @@ export class Renderer {
     if (!adapter) {
       throw new Error("No appropriate GPUAdapter found.");
     }
-    const device = await adapter.requestDevice();
+    const device = await adapter.requestDevice({
+      requiredLimits: {
+        maxBufferSize: 1024 * 1024 * 1024, // 1GB
+      }
+    });
     const context = canvas.getContext("webgpu");
     if (!context) {
       throw new Error("Could not get WebGPU context from canvas.");

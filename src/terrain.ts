@@ -133,14 +133,38 @@ export class Terrain {
   }
 
   generateTerrain(position: vec3) {
+    const terrainConfigs = {
+      normal: {
+        overallAmplitude: 100,
+        baseHeight: 10,
+        stoneDepth: 4,
+        terrainScale: 0.001,
+        numOctaves: 4,
+        persistence: 0.5,
+        lacunarity: 2.0,
+      },
+      crazy: {
+        overallAmplitude: 500,
+        baseHeight: 10,
+        stoneDepth: 4,
+        terrainScale: 0.001,
+        numOctaves: 4,
+        persistence: 0.9,
+        lacunarity: 2.0,
+      },
+    };
     const chunk = new Chunk(position);
-    const stoneDepth = 4; // How deep stone layer goes below dirt/grass
-    const terrainScale = 0.001;
-    const numOctaves = 4;
-    const persistence = 0.5;
-    const lacunarity = 2.0;
-    const overallAmplitude = 100;
-    const baseHeight = 10;
+
+    const config = terrainConfigs.normal;
+    const {
+      overallAmplitude,
+      baseHeight,
+      stoneDepth,
+      terrainScale,
+      numOctaves,
+      persistence,
+      lacunarity,
+    } = config;
 
     // Calculate world offset for noise input
     const worldOffsetX = chunk.position[0] * CHUNK_SIZE_X;
@@ -181,7 +205,7 @@ export class Terrain {
           // --- Basic Terrain Placement ---
           if (worldY > height) {
             chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
-          } else if (worldY === height) {
+          } else if (worldY <= height && worldY > height - 3) {
             chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.GRASS);
           } else if (worldY > height - stoneDepth) {
             chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.DIRT);

@@ -541,8 +541,8 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
   // --- Synchronization Function ---
   function finalizeChunkUpdates() {
     if (keysUpdatedSinceLastSync.length > 0) {
-      const keysToMarkReady = [...keysUpdatedSinceLastSync]; // Copy keys
-      keysUpdatedSinceLastSync = []; // Reset batch tracker
+      const keysToMarkReady = [...keysUpdatedSinceLastSync];
+      keysUpdatedSinceLastSync = [];
 
       rendererState.chunkManager.device.queue
         .onSubmittedWorkDone()
@@ -556,9 +556,9 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
               } else {
                 // This can happen if the chunk was deleted or updated again
                 // before the promise resolved. Usually safe to ignore.
-                console.warn(
-                  `Sync: Chunk ${key} status was not 'updating' (was ${chunkInfo.status}) when marking ready.`
-                );
+                // console.warn(
+                //   `Sync: Chunk ${key} status was not 'updating' (was ${chunkInfo.status}) when marking ready.`
+                // );
               }
             } else {
               // This can happen if the chunk was deleted before the promise resolved.
