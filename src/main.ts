@@ -158,9 +158,6 @@ async function main() {
       const vertices = new Float32Array(verticesBuffer);
       const indices = new Uint32Array(indicesBuffer);
 
-      // Update the chunk mesh
-      const key = getChunkKey(position);
-
       const minX = position[0] * CHUNK_SIZE_X;
       const minY = position[1] * CHUNK_SIZE_Y;
       const minZ = position[2] * CHUNK_SIZE_Z;
