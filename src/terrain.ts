@@ -1,6 +1,6 @@
 import { vec3 } from "gl-matrix";
 import { Chunk } from "./chunk";
-import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
+import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./config";
 import { VoxelType } from "./common/voxel-types";
 import log from "./logger";
 import { mkSimplexNoise, mulberry32, type SimplexNoise } from "./noise";
@@ -155,7 +155,7 @@ export class Terrain {
     };
     const chunk = new Chunk(position);
 
-    const config = terrainConfigs.normal;
+    const config = terrainConfigs.crazy;
     const {
       overallAmplitude,
       baseHeight,
@@ -204,7 +204,11 @@ export class Terrain {
 
           // --- Basic Terrain Placement ---
           if (worldY > height) {
-            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
+            if (Math.random() < 3e-6) {
+              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STAR);
+            } else {
+              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
+            }
           } else if (worldY <= height && worldY > height - 3) {
             chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.GRASS);
           } else if (worldY > height - stoneDepth) {
@@ -226,18 +230,6 @@ export class Terrain {
       "Terrain",
       `Perlin terrain generation complete for chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]}`
     );
-
-    // Add a 1% chance to spawn a floating stone block (Keep chunk?)
-    if (Math.random() < 0.01) {
-      const stoneX = Math.floor(Math.random() * CHUNK_SIZE_X);
-      const stoneY = Math.floor(Math.random() * CHUNK_SIZE_Y);
-      const stoneZ = Math.floor(Math.random() * CHUNK_SIZE_Z);
-      chunk.setVoxel(vec3.fromValues(stoneX, stoneY, stoneZ), VoxelType.STONE);
-      log(
-        "Terrain",
-        `[Debug] Added random stone block at ${stoneX},${stoneY},${stoneZ} in chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]}`
-      );
-    }
 
     return chunk;
   }

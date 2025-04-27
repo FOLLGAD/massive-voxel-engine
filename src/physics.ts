@@ -1,5 +1,5 @@
 import { vec3 } from "gl-matrix";
-import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./common/constants";
+import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./config";
 import log from "./logger";
 import { Chunk, getChunkKey, getChunkOfPosition } from "./chunk";
 import { FLYING_SPEED } from "./config";

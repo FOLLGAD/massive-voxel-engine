@@ -5,7 +5,7 @@ export class WorkerManager {
   private workerJobs: Map<Worker, number> = new Map();
 
   constructor(numWorkers: number = navigator.hardwareConcurrency || 4) {
-    const numInstantWorkers = 1;
+    const numInstantWorkers = 2;
     this.workers = this.init(numWorkers - numInstantWorkers);
     this.instantWorkers = this.init(numInstantWorkers);
   }
@@ -20,15 +20,20 @@ export class WorkerManager {
   }
 
   private selectWorker(instant = false) {
-    const workers = instant ? this.instantWorkers : this.workers;
-    const worker = workers.reduce((minWorker, worker) => {
-      return (this.workerJobs.get(worker) ?? 0) <
-        (this.workerJobs.get(minWorker) ?? 0)
-        ? worker
-        : minWorker;
-    }, this.workers[0]);
-
-    return worker;
+    const workers = instant
+      ? [...this.instantWorkers, ...this.workers]
+      : this.workers;
+    let min = this.workerJobs.get(workers[0]) ?? 0;
+    let minWorker = workers[0];
+    for (let i = 1; i < workers.length; i++) {
+      if (min === 0) break;
+      const jobs = this.workerJobs.get(workers[i]) ?? 0;
+      if (jobs < min) {
+        min = jobs;
+        minWorker = workers[i];
+      }
+    }
+    return minWorker;
   }
 
   async queueTask(

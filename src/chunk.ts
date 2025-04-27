@@ -1,10 +1,10 @@
 import { vec3 } from "gl-matrix";
 import {
-  CHUNK_SIZE_X,
-  CHUNK_SIZE_Y,
-  CHUNK_SIZE_Z,
-  CHUNK_VOLUME,
-} from "./common/constants";
+    CHUNK_SIZE_X,
+    CHUNK_SIZE_Y,
+    CHUNK_SIZE_Z,
+    CHUNK_VOLUME
+} from "./config";
 import { VoxelType } from "./common/voxel-types";
 import { getVoxelColor, isVoxelSolid } from "./common/voxel-types";
 import { ENABLE_GREEDY_MESHING } from "./config";

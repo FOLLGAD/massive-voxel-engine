@@ -4,12 +4,12 @@
 import { vec3 } from "gl-matrix"; // Keep gl-matrix for look direction vector
 import { ENABLE_GREEDY_MESHING, LOAD_RADIUS_XZ, LOAD_RADIUS_Y } from "./config";
 import {
-  CHUNK_SIZE_X,
-  CHUNK_SIZE_Y,
-  CHUNK_SIZE_Z,
-  UNLOAD_BUFFER_XZ,
-  UNLOAD_BUFFER_Y,
-} from "./common/constants";
+    CHUNK_SIZE_X,
+    CHUNK_SIZE_Y,
+    CHUNK_SIZE_Z,
+    UNLOAD_BUFFER_XZ,
+    UNLOAD_BUFFER_Y
+} from "./config";
 import { PlayerState, updatePhysics } from "./physics"; // Import physics
 import { Renderer } from "./renderer"; // Import renderer
 import {
