@@ -178,9 +178,9 @@ export class Renderer {
     });
 
     // --- Uniform Buffer, Bind Group, Layout (Shared by Voxel, Line, Highlight) ---
-    const uniformBufferSize = 16 * Float32Array.BYTES_PER_ELEMENT; // MVP Matrix
+    const uniformBufferSize = (16 + 4 + 4 + 4) * Float32Array.BYTES_PER_ELEMENT; // MVP (16) + LightDir(vec3+pad=4) + LightColor(vec3+pad=4) + Ambient(f32=1) + Padding = 28? NO -> 16+3+1+3+1+1+1 = 26? NO 96 bytes -> 24 floats
     const uniformBuffer = device.createBuffer({
-      label: "Uniform Buffer (Main Scene MVP Matrix)",
+      label: "Uniform Buffer (Main Scene MVP Matrix + Lighting)", // Updated label
       size: uniformBufferSize,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -189,7 +189,7 @@ export class Renderer {
       entries: [
         {
           binding: 0,
-          visibility: GPUShaderStage.VERTEX,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
       ],
@@ -358,7 +358,7 @@ export class Renderer {
       code: voxelShaderCode,
     });
     const voxelVertexBufferLayout: GPUVertexBufferLayout = {
-      arrayStride: 9 * Float32Array.BYTES_PER_ELEMENT,
+      arrayStride: 9 * Float32Array.BYTES_PER_ELEMENT, // 36 bytes: pos(3) + color(3) + normal(3)
       attributes: [
         { shaderLocation: 0, offset: 0, format: "float32x3" }, // Position
         { shaderLocation: 1, offset: 3 * 4, format: "float32x3" }, // Color
@@ -703,6 +703,25 @@ export class Renderer {
     // --- Write Uniform Buffers BEFORE Render Pass ---
     // Write main VP matrix (either normal or debug)
     this.device.queue.writeBuffer(this.uniformBuffer, 0, activeVpMatrix as Float32Array);
+    // Prepare combined uniform data for the main buffer
+    const uniformData = new Float32Array(24); // 16 MVP + 4 LightDir + 4 LightColor + 4 Ambient + pad? = 24 floats
+    uniformData.set(activeVpMatrix); // MVP matrix at offset 0 (16 floats)
+
+    // Define light data (hardcoded for now)
+    const lightDirection = vec3.normalize(vec3.create(), [0.8, 0.6, 0.2]);
+    const lightColor = [1.0, 1.0, 0.5]; // Slightly yellowish sunlight
+    const ambientIntensity = 0.7;
+
+    // Set light direction (offset 16 floats = 64 bytes) - vec3 padded to vec4
+    uniformData.set(lightDirection, 16);
+    // Set light color (offset 16 + 4 = 20 floats = 80 bytes) - vec3 padded to vec4
+    uniformData.set(lightColor, 20);
+    // Set ambient intensity (offset 20 + 3 = 23 floats? NO -> WGSL offset is 92 bytes / 4 bytes/float = 23)
+    uniformData[23] = ambientIntensity; // Offset 23
+
+    // Write the combined data
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
+
     // Write Sky VP matrix (always uses rotation-only main camera view)
     this.device.queue.writeBuffer(this.skyUniformBuffer, 0, skyVpMatrix as Float32Array);
 

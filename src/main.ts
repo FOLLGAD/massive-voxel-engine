@@ -4,11 +4,11 @@
 import { vec3 } from "gl-matrix"; // Keep gl-matrix for look direction vector
 import { ENABLE_GREEDY_MESHING, LOAD_RADIUS_XZ, LOAD_RADIUS_Y } from "./config";
 import {
-    CHUNK_SIZE_X,
-    CHUNK_SIZE_Y,
-    CHUNK_SIZE_Z,
-    UNLOAD_BUFFER_XZ,
-    UNLOAD_BUFFER_Y
+  CHUNK_SIZE_X,
+  CHUNK_SIZE_Y,
+  CHUNK_SIZE_Z,
+  UNLOAD_BUFFER_XZ,
+  UNLOAD_BUFFER_Y,
 } from "./config";
 import { PlayerState, updatePhysics } from "./physics"; // Import physics
 import { Renderer } from "./renderer"; // Import renderer
@@ -223,7 +223,7 @@ async function main() {
 
     // Raycast to find the block the player is looking at
     const MAX_DISTANCE = 20.0; // Maximum distance to check for blocks
-    const STEP_SIZE = 0.05; // Size of each step along the ray
+    const STEP_SIZE = 0.02; // Size of each step along the ray
 
     const currentPos = vec3.clone(rayStart);
     const lastPos = vec3.clone(currentPos);
@@ -255,31 +255,66 @@ async function main() {
 
       // Check if block exists (non-zero)
       if (chunk.getVoxel(localPosition) !== VoxelType.AIR) {
-        // --- Determine which face was hit ---
-        // Calculate the center of the block
-        const blockCenter = vec3.add(vec3.create(), block, [0.5, 0.5, 0.5]);
-        // Vector from block center to the intersection point
-        const intersectionVec = vec3.sub(
-          vec3.create(),
-          currentPos,
-          blockCenter
-        );
-        // Find the axis with the largest absolute component
-        const absX = Math.abs(intersectionVec[0]);
-        const absY = Math.abs(intersectionVec[1]);
-        const absZ = Math.abs(intersectionVec[2]);
+        // --- Determine which face was hit using Ray-AABB intersection ---
+        const aabbMin = block;
+        const aabbMax = vec3.add(vec3.create(), block, [1, 1, 1]);
+        // Avoid division by zero if lookDirection component is zero
+        const invDirX =
+          lookDirection[0] === 0
+            ? Number.POSITIVE_INFINITY
+            : 1 / lookDirection[0];
+        const invDirY =
+          lookDirection[1] === 0
+            ? Number.POSITIVE_INFINITY
+            : 1 / lookDirection[1];
+        const invDirZ =
+          lookDirection[2] === 0
+            ? Number.POSITIVE_INFINITY
+            : 1 / lookDirection[2];
 
-        let face: 0 | 1 | 2 | 3 | 4 | 5 = 0; // Default, should always be overwritten
+        const t1x = (aabbMin[0] - rayStart[0]) * invDirX;
+        const t2x = (aabbMax[0] - rayStart[0]) * invDirX;
+        const tNearX = Math.min(t1x, t2x);
+        const tFarX = Math.max(t1x, t2x);
 
-        if (absX >= absY && absX >= absZ) {
-          // Hit X face
-          face = intersectionVec[0] > 0 ? 0 : 1; // +X or -X
-        } else if (absY >= absX && absY >= absZ) {
-          // Hit Y face
-          face = intersectionVec[1] > 0 ? 2 : 3; // +Y or -Y
+        const t1y = (aabbMin[1] - rayStart[1]) * invDirY;
+        const t2y = (aabbMax[1] - rayStart[1]) * invDirY;
+        const tNearY = Math.min(t1y, t2y);
+        const tFarY = Math.max(t1y, t2y);
+
+        const t1z = (aabbMin[2] - rayStart[2]) * invDirZ;
+        const t2z = (aabbMax[2] - rayStart[2]) * invDirZ;
+        const tNearZ = Math.min(t1z, t2z);
+        const tFarZ = Math.max(t1z, t2z);
+
+        const tNear = Math.max(tNearX, tNearY, tNearZ);
+        const tFar = Math.min(tFarX, tFarY, tFarZ);
+
+        let face: 0 | 1 | 2 | 3 | 4 | 5 = 0; // Default face
+
+        // Check for valid intersection where entry happens before exit and exit is not behind the ray start
+        if (tNear < tFar && tFar >= 0) {
+          const epsilon = 1e-5; // Tolerance for floating point comparison
+          if (Math.abs(tNear - tNearX) < epsilon) {
+            face = lookDirection[0] < 0 ? 0 : 1; // Hit +X (0) or -X (1) face
+          } else if (Math.abs(tNear - tNearY) < epsilon) {
+            face = lookDirection[1] < 0 ? 2 : 3; // Hit +Y (2) or -Y (3) face
+          } else {
+            // Must be Z face
+            face = lookDirection[2] < 0 ? 4 : 5; // Hit +Z (4) or -Z (5) face
+          }
         } else {
-          // Hit Z face
-          face = intersectionVec[2] > 0 ? 4 : 5; // +Z or -Z
+          // This case should ideally not be reached if the stepped ray found a block.
+          // Log a warning and return null as we couldn't reliably determine the face.
+          log.warn(
+            "Main",
+            `Ray-AABB intersection failed for block ${vec3.str(
+              block
+            )} despite stepped ray hit. tNear: ${tNear.toFixed(
+              3
+            )}, tFar: ${tFar.toFixed(3)}`
+          );
+          return null; // Indicate failure to determine face accurately
         }
         // --- End Face Calculation ---
 
