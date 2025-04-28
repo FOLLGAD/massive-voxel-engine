@@ -4,6 +4,8 @@ import log from "./logger";
 import { Chunk, getChunkKey, getChunkOfPosition } from "./chunk";
 import { FLYING_SPEED } from "./config";
 import type { KeyboardState } from "./keyboard";
+import { createAABB, doesAABBOverlap, expandAABB, type AABB } from "./aabb";
+import { VoxelType } from "./common/voxel-types";
 
 // --- Physics Constants ---
 export const GRAVITY = -16.0; // Units per second squared
@@ -16,61 +18,11 @@ export const PLAYER_HALF_WIDTH = PLAYER_WIDTH / 2;
 const COLLISION_EPSILON = 1e-6;
 export const PLAYER_EYE_LEVEL = 1.6;
 
-export interface AABB {
-  min: vec3;
-  max: vec3;
-}
-
-function createAABB(
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number
-): AABB {
-  return {
-    min: vec3.fromValues(minX, minY, minZ),
-    max: vec3.fromValues(maxX, maxY, maxZ),
-  };
-}
-
-function getPlayerAABB(position: vec3): AABB {
-  return createAABB(
-    position[0] - PLAYER_HALF_WIDTH,
-    position[1],
-    position[2] - PLAYER_HALF_WIDTH,
-    position[0] + PLAYER_HALF_WIDTH,
-    position[1] + PLAYER_HEIGHT,
-    position[2] + PLAYER_HALF_WIDTH
-  );
-}
-
-function expandAABB(aabb: AABB, x: number, y: number, z: number): AABB {
-  const newMin = vec3.clone(aabb.min);
-  const newMax = vec3.clone(aabb.max);
-  if (x < 0) newMin[0] += x;
-  else newMax[0] += x;
-  if (y < 0) newMin[1] += y;
-  else newMax[1] += y;
-  if (z < 0) newMin[2] += z;
-  else newMax[2] += z;
-  return { min: newMin, max: newMax };
-}
-
-function doesAABBOverlap(a: AABB, b: AABB): boolean {
-  return (
-    a.min[0] < b.max[0] &&
-    a.max[0] > b.min[0] &&
-    a.min[1] < b.max[1] &&
-    a.max[1] > b.min[1] &&
-    a.min[2] < b.max[2] &&
-    a.max[2] > b.min[2]
-  );
-}
-
 function getVoxelAABB(voxelX: number, voxelY: number, voxelZ: number): AABB {
-  return createAABB(voxelX, voxelY, voxelZ, voxelX + 1, voxelY + 1, voxelZ + 1);
+  return createAABB(
+    vec3.fromValues(voxelX, voxelY, voxelZ),
+    vec3.fromValues(voxelX + 1, voxelY + 1, voxelZ + 1)
+  );
 }
 
 // --- Player State ---
@@ -108,23 +60,34 @@ export class PlayerState {
   }
 }
 
+function getPlayerAABB(position: vec3): AABB {
+  return createAABB(
+    vec3.fromValues(
+      position[0] - PLAYER_HALF_WIDTH,
+      position[1],
+      position[2] - PLAYER_HALF_WIDTH
+    ),
+    vec3.fromValues(
+      position[0] + PLAYER_HALF_WIDTH,
+      position[1] + PLAYER_HEIGHT,
+      position[2] + PLAYER_HALF_WIDTH
+    )
+  );
+}
+
 // --- Voxel Interaction ---
 
 // Check if a voxel type is solid
-function isSolidVoxel(voxelType: number): boolean {
-  return voxelType !== 0; // Assuming 0 is Air
+function isSolidVoxel(voxelType: VoxelType): boolean {
+  return voxelType !== VoxelType.AIR;
 }
 
 // Get voxel type at world coordinates (Needs access to loadedChunkData)
 function getVoxelAt(
-  worldX: number,
-  worldY: number,
-  worldZ: number,
+  position: vec3,
   loadedChunkData: Map<string, Uint8Array>
-): number {
-  const chunkPosition = getChunkOfPosition(
-    vec3.fromValues(worldX, worldY, worldZ)
-  );
+): VoxelType {
+  const chunkPosition = getChunkOfPosition(position);
 
   const key = getChunkKey(chunkPosition);
   const chunkData = loadedChunkData.get(key);
@@ -132,9 +95,9 @@ function getVoxelAt(
   if (!chunkData) {
     log.warn(
       "Physics",
-      `Chunk data not loaded for ${key} at getVoxelAt(${worldX.toFixed(
+      `Chunk data not loaded for ${key} at getVoxelAt(${position[0].toFixed(
         1
-      )}, ${worldY.toFixed(1)}, ${worldZ.toFixed(1)})`
+      )}, ${position[1].toFixed(1)}, ${position[2].toFixed(1)})`
     );
     return 0; // Treat unloaded chunks as Air for safety
   }
@@ -142,9 +105,9 @@ function getVoxelAt(
   const chunk = new Chunk(chunkPosition, chunkData);
 
   const localPos = vec3.fromValues(
-    Math.floor(worldX) - chunk.position[0] * CHUNK_SIZE_X,
-    Math.floor(worldY) - chunk.position[1] * CHUNK_SIZE_Y,
-    Math.floor(worldZ) - chunk.position[2] * CHUNK_SIZE_Z
+    Math.floor(position[0]) - chunk.position[0] * CHUNK_SIZE_X,
+    Math.floor(position[1]) - chunk.position[1] * CHUNK_SIZE_Y,
+    Math.floor(position[2]) - chunk.position[2] * CHUNK_SIZE_Z
   );
 
   const voxel = chunk.getVoxel(localPos);
@@ -172,9 +135,7 @@ function getPotentialVoxelCollisions(
     for (let z = minZ; z < maxZ; z++) {
       for (let x = minX; x < maxX; x++) {
         const voxelType = getVoxelAt(
-          x + 0.5,
-          y + 0.5,
-          z + 0.5,
+          vec3.fromValues(x + 0.5, y + 0.5, z + 0.5),
           loadedChunkData
         ); // Check center of voxel
         if (isSolidVoxel(voxelType)) {

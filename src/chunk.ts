@@ -1,14 +1,15 @@
 import { vec3 } from "gl-matrix";
 import {
-    CHUNK_SIZE_X,
-    CHUNK_SIZE_Y,
-    CHUNK_SIZE_Z,
-    CHUNK_VOLUME
+  CHUNK_SIZE_X,
+  CHUNK_SIZE_Y,
+  CHUNK_SIZE_Z,
+  CHUNK_VOLUME,
 } from "./config";
 import { VoxelType } from "./common/voxel-types";
 import { getVoxelColor, isVoxelSolid } from "./common/voxel-types";
 import { ENABLE_GREEDY_MESHING } from "./config";
 import log from "./logger";
+import type { AABB } from "./aabb";
 
 export const getLocalPosition = (position: vec3) => {
   const x = ((position[0] % CHUNK_SIZE_X) + CHUNK_SIZE_X) % CHUNK_SIZE_X;
@@ -415,7 +416,7 @@ export interface ChunkMesh {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
   indexCount: number;
-  aabb: { min: vec3; max: vec3 }; // Add AABB for frustum culling
+  aabb: AABB; // Add AABB for frustum culling
 }
 
 export function getChunkKey(pos: vec3): string {

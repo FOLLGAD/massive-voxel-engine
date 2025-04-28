@@ -1,5 +1,4 @@
 import { vec3 } from "gl-matrix";
-import type { ChunkMesh } from "./chunk";
 import {
   type Plane,
   DEBUG_COLOR_DRAWN,
@@ -8,8 +7,8 @@ import {
   DEBUG_COLOR_PLAYER,
   Renderer,
 } from "./renderer";
-import { getPlayerAABB } from "./renderer.util";
 import type { ChunkManager } from "./chunk-manager";
+import { getPlayerAABB } from "./aabb";
 
 /** Adds line vertices for the 12 edges of a frustum defined by its 8 corners */
 export function addFrustumLineVertices(

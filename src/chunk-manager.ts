@@ -1,5 +1,6 @@
-import type { vec3 } from "gl-matrix";
 import { getChunkKey } from "./chunk";
+import type { AABB } from "./aabb";
+import type { vec3 } from "gl-matrix";
 
 // Define constants needed for calculations
 const VERTEX_STRIDE_BYTES = 9 * Float32Array.BYTES_PER_ELEMENT; // Matches renderer's voxelVertexBufferLayout
@@ -28,7 +29,7 @@ export interface ChunkGeometryInfo {
   indexData: Uint32Array;
 
   /** The AABB of the chunk. */
-  aabb: { min: vec3; max: vec3 };
+  aabb: AABB;
 
   /** The position of the chunk. */
   position: vec3;
@@ -159,7 +160,7 @@ export class ChunkManager {
     vertexSizeBytes: number,
     indexData: Uint32Array,
     indexSizeBytes: number,
-    aabb: { min: vec3; max: vec3 }
+    aabb: AABB
   ) {
     const key = getChunkKey(position);
 
@@ -368,7 +369,7 @@ export class ChunkManager {
     vertexSizeBytes: number,
     indexData: Uint32Array,
     indexSizeBytes: number,
-    aabb: { min: vec3; max: vec3 }
+    aabb: AABB
   ) {
     const key = getChunkKey(position);
     const existingChunkInfo = this.chunkGeometryInfo.get(key);

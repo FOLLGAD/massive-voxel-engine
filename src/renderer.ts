@@ -2,6 +2,7 @@ import { mat4, vec3, vec4 } from "gl-matrix";
 import { ChunkManager, type ChunkGeometryInfo } from "./chunk-manager";
 import { drawDebugLines, generateDebugLineVertices } from "./renderer.debug";
 import { extractFrustumPlanes } from "./renderer.util";
+import type { AABB } from "./aabb";
 
 // --- Constants ---
 const FRUSTUM_CULLING_EPSILON = 1e-5;
@@ -590,15 +591,14 @@ export class Renderer {
 
   public static intersectFrustumAABB(
     planes: Plane[],
-    aabb: { min: vec3; max: vec3 }
+    aabb: AABB
   ): boolean {
-    const { min, max } = aabb;
     for (let i = 0; i < 6; i++) {
       const plane = planes[i];
       const positiveVertex: vec3 = [
-        plane[0] > 0 ? max[0] : min[0],
-        plane[1] > 0 ? max[1] : min[1],
-        plane[2] > 0 ? max[2] : min[2],
+        plane[0] > 0 ? aabb.max[0] : aabb.min[0],
+        plane[1] > 0 ? aabb.max[1] : aabb.min[1],
+        plane[2] > 0 ? aabb.max[2] : aabb.min[2],
       ];
       const distance = vec4.dot(plane, vec4.fromValues(positiveVertex[0], positiveVertex[1], positiveVertex[2], 1.0));
       if (distance < -FRUSTUM_CULLING_EPSILON) return false;

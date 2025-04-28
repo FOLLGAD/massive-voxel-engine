@@ -17,12 +17,12 @@ import {
   getChunkKey,
   getChunkOfPosition,
   getLocalPosition,
-  type ChunkMesh,
 } from "./chunk";
 import log from "./logger";
 import { KeyboardState } from "./keyboard";
 import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
+import { createAABB } from "./aabb";
 
 const DEBUG_MODE = true;
 
@@ -117,6 +117,9 @@ async function main() {
     log("Main", "Renderer Initialized");
   } catch (error) {
     log("Main", "Failed to initialize renderer:", error);
+    alert(
+      "Failed to initialize renderer. You need WebGPU enabled in your browser."
+    );
     return; // Stop if renderer fails
   }
 
@@ -165,10 +168,10 @@ async function main() {
       const maxX = minX + CHUNK_SIZE_X;
       const maxY = minY + CHUNK_SIZE_Y;
       const maxZ = minZ + CHUNK_SIZE_Z;
-      const aabb = {
-        min: vec3.fromValues(minX, minY, minZ),
-        max: vec3.fromValues(maxX, maxY, maxZ),
-      };
+      const aabb = createAABB(
+        vec3.fromValues(minX, minY, minZ),
+        vec3.fromValues(maxX, maxY, maxZ)
+      );
 
       const key = getChunkKey(position);
 

@@ -1,6 +1,5 @@
 import { vec3, vec4, type mat4 } from "gl-matrix";
 import type { Plane } from "./renderer";
-import { PLAYER_HALF_WIDTH, PLAYER_HEIGHT } from "./physics";
 
 // --- Frustum Culling Helpers (Static) ---
 export function extractFrustumPlanes(mat: mat4): Plane[] {
@@ -27,21 +26,4 @@ export function extractFrustumPlanes(mat: mat4): Plane[] {
     vec4.scale(plane, plane, invLength);
   }
   return planes;
-}
-
-export function getPlayerAABB(cameraPos: vec3): { min: vec3; max: vec3 } {
-  const minY = cameraPos[1] - PLAYER_HEIGHT;
-  const maxY = cameraPos[1];
-  return {
-    min: vec3.fromValues(
-      cameraPos[0] - PLAYER_HALF_WIDTH,
-      minY,
-      cameraPos[2] - PLAYER_HALF_WIDTH
-    ),
-    max: vec3.fromValues(
-      cameraPos[0] + PLAYER_HALF_WIDTH,
-      maxY,
-      cameraPos[2] + PLAYER_HALF_WIDTH
-    ),
-  };
 }

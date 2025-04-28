@@ -13,7 +13,7 @@ export class WorkerManager {
   private init(numWorkers: number = navigator.hardwareConcurrency || 4) {
     const workers: Worker[] = [];
     for (let i = 0; i < numWorkers; i++) {
-      const worker = new Worker("./worker.js");
+      const worker = new Worker("./src/worker.js");
       workers.push(worker);
     }
     return workers;

@@ -4,15 +4,19 @@
 	"description": "A performant massive voxel engine using WebGPU and Web Workers",
 	"main": "dist/main.js",
 	"scripts": {
-		"build": "bun build --minify ./src/main.ts ./src/worker.ts --outdir ./dist --watch",
+		"build:dev": "bun build ./src/main.ts ./src/worker.ts ./index.html --outdir ./public --watch",
+		"build": "bun build --minify ./src/main.ts ./src/worker.ts ./index.html --outdir ./public",
 		"dev": "bun --watch ./src/main.ts",
-		"test": "echo \"Error: no test specified\" && exit 1"
+		"test": "echo \"Error: no test specified\" && exit 1",
+		"deploy": "wrangler deploy",
+		"start": "wrangler dev"
 	},
 	"keywords": ["voxel", "webgpu", "webworker", "engine"],
 	"author": "",
 	"license": "ISC",
 	"devDependencies": {
-		"typescript": "^5.4.5"
+		"typescript": "^5.4.5",
+		"wrangler": "^4.13.2"
 	},
 	"dependencies": {
 		"@types/bun": "^1.2.10",
