@@ -762,7 +762,7 @@ export class Renderer {
     const allChunkInfos = this.chunkManager.chunkGeometryInfo.values();
 
     for (const info of allChunkInfos) {
-      if ((info.status === 'ready' || info.status === 'updating') && Renderer.intersectFrustumAABB(frustumPlanes, info.aabb)) {
+      if (Renderer.intersectFrustumAABB(frustumPlanes, info.aabb)) {
         visibleChunkInfos.push(info);
       } else {
         culledChunks++;

@@ -39,9 +39,6 @@ export interface ChunkGeometryInfo {
 
   /** The value added to each index before reading from the vertex buffer. */
   baseVertex: number;
-
-  /** Current state for rendering synchronization */
-  status: "ready" | "updating";
 }
 
 export interface MemorySpaceInfo {
@@ -164,11 +161,7 @@ export class ChunkManager {
   ) {
     const key = getChunkKey(position);
 
-    // --- Add placeholder entry to map immediately with 'updating' status ---
-    // This ensures the key exists even if allocation/write fails,
-    // and renderer knows not to draw it yet.
-    // We'll update this entry later with correct offsets.
-    this.chunkGeometryInfo.set(key, {
+    const chunkGeometryInfo: ChunkGeometryInfo = {
       indexCount: 0, // Placeholder
       indexOffsetBytes: -1, // Placeholder
       indexSizeBytes: indexSizeBytes,
@@ -180,8 +173,8 @@ export class ChunkManager {
       position: position,
       firstIndex: -1, // Placeholder
       baseVertex: -1, // Placeholder
-      status: "updating", // Start as updating
-    });
+    };
+    this.chunkGeometryInfo.set(key, chunkGeometryInfo);
 
     let vertexOffsetBytes = -1;
     let indexOffsetBytes = -1;
@@ -345,13 +338,12 @@ export class ChunkManager {
 
     // --- Update the placeholder geometry info in the map ---
     // !! DO NOT set status to ready here !!
-    const finalChunkInfo = this.chunkGeometryInfo.get(key);
-    if (finalChunkInfo) {
-      finalChunkInfo.indexCount = indexData.length;
-      finalChunkInfo.indexOffsetBytes = indexOffsetBytes;
-      finalChunkInfo.vertexOffsetBytes = vertexOffsetBytes;
-      finalChunkInfo.firstIndex = firstIndex;
-      finalChunkInfo.baseVertex = baseVertex;
+    if (chunkGeometryInfo) {
+      chunkGeometryInfo.indexCount = indexData.length;
+      chunkGeometryInfo.indexOffsetBytes = indexOffsetBytes;
+      chunkGeometryInfo.vertexOffsetBytes = vertexOffsetBytes;
+      chunkGeometryInfo.firstIndex = firstIndex;
+      chunkGeometryInfo.baseVertex = baseVertex;
       // finalChunkInfo.status remains 'updating'
     } else {
       console.error(`Chunk info for key ${key} missing after allocation!`);
@@ -389,7 +381,6 @@ export class ChunkManager {
       return;
     }
 
-    existingChunkInfo.status = "updating";
     existingChunkInfo.position = position;
     existingChunkInfo.aabb = aabb;
     existingChunkInfo.vertexData = vertexData;
@@ -490,14 +481,6 @@ export class ChunkManager {
       key,
     });
 
-    // Error Handling Helper
-    const handleUpdateWriteError = (bufferType: "vertex" | "index") => {
-      console.error(
-        `Error during ${bufferType} write for UPDATED chunk ${key}. State might be inconsistent.`
-      );
-      existingChunkInfo.status = "updating";
-    };
-
     // Queue Write operations for the NEW data
     // Vertex Write
     if (
@@ -505,7 +488,6 @@ export class ChunkManager {
       this.sharedVertexBuffer.size
     ) {
       console.error(`[Update] Vertex write buffer overflow for key ${key}!`);
-      handleUpdateWriteError("vertex");
       return;
     }
     try {
@@ -519,14 +501,12 @@ export class ChunkManager {
         );
     } catch (error) {
       console.error("[Update] Vertex write error:", error);
-      handleUpdateWriteError("vertex");
       return;
     }
 
     // Index Write
     if (indexOffsetBytes + indexData.byteLength > this.sharedIndexBuffer.size) {
       console.error(`[Update] Index write buffer overflow for key ${key}!`);
-      handleUpdateWriteError("index");
       return;
     }
     try {
@@ -540,7 +520,6 @@ export class ChunkManager {
         );
     } catch (error) {
       console.error("[Update] Index write error:", error);
-      handleUpdateWriteError("index");
       return;
     }
 
