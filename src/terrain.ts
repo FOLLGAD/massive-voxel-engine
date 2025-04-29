@@ -155,7 +155,7 @@ export class Terrain {
     };
     const chunk = new Chunk(position);
 
-    const config = terrainConfigs.normal;
+    const config = terrainConfigs.crazy;
     const {
       overallAmplitude,
       baseHeight,

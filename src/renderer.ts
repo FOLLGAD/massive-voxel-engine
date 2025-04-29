@@ -687,7 +687,7 @@ export class Renderer {
     let worldFrustumCorners: vec3[] = [];
     let activeVpMatrix = this.vpMatrix; // Default to main VP matrix
 
-    if (debugCamera && enableDebugView) {
+    if (debugCamera) {
       mat4.lookAt(
         this.viewMatrixDebug,
         debugCamera.position,
@@ -809,7 +809,7 @@ export class Renderer {
 
     // --- Draw Debug Lines ---
     // Debug lines also use the 'activeVpMatrix' via the main uniform buffer
-    if (enableDebugView && ENABLE_CHUNK_DEBUG_LINES) {
+    if (enableDebugView) {
         // NO need to write uniform buffer here, it was set before the pass
 
         const lineData = generateDebugLineVertices(
@@ -833,7 +833,7 @@ export class Renderer {
 
         // drawDebugLines uses the Renderer instance to get the linePipeline and debugLineBuffer
         // It implicitly uses the currently bound main bind group (binding 0) for the VP matrix
-        drawDebugLines(passEncoder, this, lineData);
+        drawDebugLines(passEncoder, this, lineData, debugCamera ? this.vpMatrixDebug : this.vpMatrix);
     }
 
     // --- Draw Crosshair ---

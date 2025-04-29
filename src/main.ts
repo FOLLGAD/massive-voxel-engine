@@ -24,7 +24,7 @@ import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
 
-const DEBUG_MODE = true;
+let debugMode = false;
 
 log("Main", "Main script loaded.");
 
@@ -129,6 +129,8 @@ async function main() {
 
   const workerManager = new WorkerManager(numWorkers);
 
+  let blockToPlace: VoxelType = VoxelType.STONE;
+
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
     const type = event.data.type;
@@ -213,6 +215,8 @@ async function main() {
   const debugInfoElement = document.getElementById(
     "debug-info"
   ) as HTMLDivElement;
+
+  const toolbarElement = document.getElementById("toolbar") as HTMLDivElement;
 
   const getBlockLookedAt = (position: vec3, cameraYaw: number) => {
     const lookDirection = vec3.fromValues(
@@ -346,6 +350,9 @@ async function main() {
     if (keyboardState.pressedKeys.has("KeyC")) {
       debugCameraEnabled = !debugCameraEnabled;
     }
+    if (keyboardState.pressedKeys.has("KeyV")) {
+      debugMode = !debugMode;
+    }
     if (keyboardState.downKeys.has("KeyH")) {
       fov += 0.01;
     }
@@ -353,7 +360,21 @@ async function main() {
       fov -= 0.01;
     }
 
-    if (keyboardState.mouseDown && blockLookedAt) {
+    if (keyboardState.pressedKeys.has("KeyQ")) {
+      blockToPlace -= 1;
+      if (blockToPlace <= VoxelType.AIR) {
+        blockToPlace = VoxelType.REDSTONE;
+      }
+      updateToolbar();
+    }
+    if (keyboardState.pressedKeys.has("KeyE")) {
+      blockToPlace += 1;
+      if (blockToPlace > VoxelType.REDSTONE) {
+        blockToPlace = VoxelType.STONE;
+      }
+      updateToolbar();
+    }
+    if (keyboardState.mouseClicked && blockLookedAt) {
       const { block } = blockLookedAt;
       const chunkData = loadedChunkData.get(
         getChunkKey(getChunkOfPosition(block))
@@ -383,7 +404,7 @@ async function main() {
       );
       if (!chunkData) return;
       const chunk = new Chunk(getChunkOfPosition(newBlock), chunkData);
-      chunk.setVoxel(localPosition, VoxelType.STONE);
+      chunk.setVoxel(localPosition, blockToPlace);
       chunkData.set(chunk.data);
 
       workerManager.queueTask(
@@ -475,7 +496,7 @@ async function main() {
             target: debugCameraTarget,
           }
         : undefined,
-      DEBUG_MODE
+      debugMode
     );
     lastTotalTriangles = renderResult.totalTriangles;
 
@@ -566,6 +587,43 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
 
     requestAnimationFrame(frameLoop);
   };
+
+  const updateToolbar = () => {
+    if (!toolbarElement) return;
+    toolbarElement.innerHTML = "";
+    const voxelTypes = [
+      { name: "Stone", id: VoxelType.STONE },
+      { name: "Grass", id: VoxelType.GRASS },
+      { name: "Dirt", id: VoxelType.DIRT },
+      { name: "Sand", id: VoxelType.SAND },
+      { name: "Star", id: VoxelType.STAR },
+      { name: "Water", id: VoxelType.WATER },
+      { name: "Lava", id: VoxelType.LAVA },
+      { name: "Glass", id: VoxelType.GLASS },
+      { name: "Iron", id: VoxelType.IRON },
+      { name: "Gold", id: VoxelType.GOLD },
+      { name: "Diamond", id: VoxelType.DIAMOND },
+      { name: "Emerald", id: VoxelType.EMERALD },
+      { name: "Lapis Lazuli", id: VoxelType.LAPIS_LAZULI },
+      { name: "Redstone", id: VoxelType.REDSTONE },
+    ];
+    for (const voxelType of voxelTypes) {
+      const button = document.createElement("button");
+      button.textContent = voxelType.name;
+      button.style.border = "none";
+      button.style.backgroundColor =
+        voxelType.id === blockToPlace ? "gray" : "transparent";
+      button.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        blockToPlace = voxelType.id;
+        updateToolbar();
+      };
+      toolbarElement.appendChild(button);
+    }
+  };
+
+  updateToolbar();
 
   requestAnimationFrame(frameLoop);
 

@@ -20,10 +20,17 @@
             white-space: pre; /* Preserve whitespace for formatting */
             border-radius: 10px;
         }
+        #toolbar {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
     <canvas id="webgpu-canvas"></canvas>
+    <div id="toolbar"></div>
     <div id="debug-info">Loading...</div>
     <script src="/src/main.ts"></script>
 </body>

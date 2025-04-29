@@ -1,4 +1,4 @@
-import { vec3 } from "gl-matrix";
+import { type mat4, vec3 } from "gl-matrix";
 import {
   type Plane,
   DEBUG_COLOR_DRAWN,
@@ -148,13 +148,14 @@ export function addAABBLineVertices(
 export function drawDebugLines(
   passEncoder: GPURenderPassEncoder,
   rendererState: Renderer,
-  lineData: Float32Array
+  lineData: Float32Array,
+  vpMatrix: mat4
 ) {
   // Write the debug view matrix to the uniform buffer
   rendererState.device.queue.writeBuffer(
     rendererState.uniformBuffer,
     0,
-    rendererState.vpMatrixDebug as Float32Array
+    vpMatrix as Float32Array
   );
   // Upload the line data to the buffer
   rendererState.device.queue.writeBuffer(
