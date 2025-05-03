@@ -31,32 +31,24 @@ self.onmessage = (event: MessageEvent) => {
         // Send voxel data FIRST (or concurrently) for physics
         self.postMessage({
           type: "chunkDataAvailable",
-          position: position,
+          position,
           voxels: chunk.data,
         });
 
         const mesh = chunk.generateMesh(); // Calls the appropriate mesher based on the flag
         log(
           "Worker",
-          `Mesh generated. Vertices count: ${
-            mesh.vertices.length / 9
+          `Mesh generated. Vertices count: ${mesh.vertices.length / 9
           }, Indices count: ${mesh.indices.length}`
         ); // Vertices are pos+color+normal (9 floats)
 
-        if (mesh.vertices.length > 0 && mesh.indices.length > 0) {
-          self.postMessage({
-            type: "chunkMeshUpdated",
-            position: position,
-            vertices: mesh.vertices.buffer,
-            indices: mesh.indices.buffer,
-          });
-        } else {
-          log.warn(
-            "Worker",
-            `Skipping postMessage for empty mesh at ${JSON.stringify(position)}`
-          );
-          self.postMessage({ type: "chunkMeshEmpty", position: position });
-        }
+        self.postMessage({
+          type: "chunkMeshUpdated",
+          position,
+          vertices: mesh.vertices.buffer,
+          indices: mesh.indices.buffer,
+          visibilityBits: chunk.generateVisibilityMatrix(),
+        });
       }
     } catch (error) {
       log.error("Worker", "Error during mesh generation or posting:", error);
@@ -73,6 +65,7 @@ self.onmessage = (event: MessageEvent) => {
       position: position,
       vertices: mesh.vertices.buffer,
       indices: mesh.indices.buffer,
+      visibilityBits: chunk.generateVisibilityMatrix(),
     });
   } else {
     log.warn("Worker", `Unknown message type received: ${type}`);
