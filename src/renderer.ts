@@ -106,12 +106,6 @@ const cullChunks = (
   while (queue.length > 0) {
     const [currentChunkInfo, entryFace] = queue.shift() as [ChunkGeometryInfo, number]; // Dequeue
 
-    if (!postFrustumCheck) {
-      if (!Renderer.intersectFrustumAABB(frustumPlanes, currentChunkInfo.aabb)) {
-        continue;
-      }
-    }
-
     const currentChunkPos = currentChunkInfo.position;
     const currentVisibilityBits = currentChunkInfo.visibilityBits;
 
@@ -163,10 +157,16 @@ const cullChunks = (
 
       // --- Visibility Decision --- 
       if (canSeeNeighbor) {
+        visitedKeys.add(neighborChunkKey);
+        if (!postFrustumCheck) {
+          if (!Renderer.intersectFrustumAABB(frustumPlanes, neighborChunkInfo.aabb)) {
+            continue;
+          }
+        }
+
         const neighborEntryFace = getOppositeFace(exitFace);
         queue.push([neighborChunkInfo, neighborEntryFace]);
         visibleChunks.set(neighborChunkKey, neighborChunkInfo);
-        visitedKeys.add(neighborChunkKey);
       }
     }
   }
@@ -863,9 +863,9 @@ export class Renderer {
 
     // Draw all visible chunks using offsets
     for (const info of visibleChunkInfos) {
-        passEncoder.drawIndexed(info.indexCount, 1, info.firstIndex, info.baseVertex, 0);
-        totalTriangles += info.indexCount / 3;
-        drawnChunks++;
+      passEncoder.drawIndexed(info.indexCount, 1, info.firstIndex, info.baseVertex, 0);
+      totalTriangles += info.indexCount / 3;
+      drawnChunks++;
     }
 
     // Return drawn count and triangles based on the loops
@@ -1071,7 +1071,7 @@ export class Renderer {
 
         // drawDebugLines uses the Renderer instance to get the linePipeline etc.
         // It should use the main bind group (binding 0) which holds the active VP matrix
-        drawDebugLines(passEncoder, this, lineData, this.vpMatrix); // Pass vertex count
+        drawDebugLines(passEncoder, this, lineData, activeVpMatrix); // Pass vertex count
       }
     }
 
