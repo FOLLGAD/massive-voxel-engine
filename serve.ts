@@ -2,8 +2,8 @@ import { file } from "bun";
 import path from "node:path";
 
 const projectRoot = import.meta.dir;
-const distDir = path.resolve(projectRoot, "dist");
-const indexHtmlPath = path.resolve(projectRoot, "index.html");
+const distDir = path.resolve(projectRoot, "public");
+const indexHtmlPath = path.resolve(projectRoot, "public", "index.html");
 
 console.log(`Serving files from: ${projectRoot}`);
 console.log(`Dist directory: ${distDir}`);
