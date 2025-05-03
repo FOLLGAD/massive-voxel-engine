@@ -74,8 +74,17 @@ const cullChunks = (
   cameraPosition: vec3,
   enableAdvancedCulling: boolean
 ): ChunkGeometryInfo[] => {
+  const startTime = performance.now();
+  let totalIntersectionTime = 0;
+
   if (!enableAdvancedCulling) {
-    return [...allChunkInfos.values()].filter(chunkInfo => Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb));
+    const result = [...allChunkInfos.values()].filter(chunkInfo => {
+      const intersectStart = performance.now();
+      const intersects = Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb);
+      totalIntersectionTime += performance.now() - intersectStart;
+      return intersects;
+    });
+    return result;
   }
   const startChunkPos = getChunkOfPosition(cameraPosition);
   const startChunkKey = getChunkKey(startChunkPos);
@@ -90,6 +99,18 @@ const cullChunks = (
     // Start chunk doesn't exist, isn't loaded, or is outside frustum
     return [];
   }
+
+  // Initial frustum check for the starting chunk
+  const intersectStartInitial = performance.now();
+  if (!Renderer.intersectFrustumAABB(frustumPlanes, startChunkInfo.aabb)) {
+    totalIntersectionTime += performance.now() - intersectStartInitial;
+    console.warn("Starting chunk is outside frustum, returning empty.");
+    const duration = performance.now() - startTime;
+    console.log(`cullChunks (Advanced - Start Culled) took ${duration.toFixed(2)}ms. Intersection tests took ${totalIntersectionTime.toFixed(2)}ms.`);
+    return []; // Early exit if start chunk is culled
+  }
+  totalIntersectionTime += performance.now() - intersectStartInitial;
+
 
   const visibleChunks = new Map<string, ChunkGeometryInfo>(); // Stores potentially visible chunks
   const queue: [ChunkGeometryInfo, number][] = []; // [chunkInfo, entryFaceIndex]
@@ -140,56 +161,79 @@ const cullChunks = (
         continue; // Neighbor doesn't exist or isn't loaded
       }
 
-      // --- Occlusion Check --- 
+      // --- Occlusion Check ---
       let canSeeNeighbor = false;
       if (entryFace === -1) {
+        // Always consider neighbors of the start chunk visible initially (frustum check happens below)
         canSeeNeighbor = true;
-        visitedKeys.add(neighborChunkKey);
+        // Don't add to visitedKeys here, add it after the frustum check passes
       } else {
+        // Don't check visibility from the face we entered from
         if (entryFace === exitFace) {
           continue;
         }
         const bitIndex = getPairBitIndex(entryFace, exitFace);
+        // If bitIndex is valid and the visibility bit is set, it's potentially visible
         if (bitIndex !== -1 && (currentVisibilityBits & (1 << bitIndex)) !== 0) {
           canSeeNeighbor = true;
         }
       }
 
-      // --- Visibility Decision --- 
+
+      // --- Visibility Decision ---
       if (canSeeNeighbor) {
-        visitedKeys.add(neighborChunkKey);
+        // Add to visited *before* frustum check if doing pre-check
         if (!postFrustumCheck) {
+          visitedKeys.add(neighborChunkKey);
+          const intersectStart = performance.now();
           if (!Renderer.intersectFrustumAABB(frustumPlanes, neighborChunkInfo.aabb)) {
-            continue;
+            totalIntersectionTime += performance.now() - intersectStart;
+            continue; // Cull based on frustum early
           }
+          totalIntersectionTime += performance.now() - intersectStart;
         }
 
+        // If we got here, the chunk is considered visible (passed occlusion and potentially frustum)
         const neighborEntryFace = getOppositeFace(exitFace);
         queue.push([neighborChunkInfo, neighborEntryFace]);
         visibleChunks.set(neighborChunkKey, neighborChunkInfo);
+
+        // Add to visited here if doing post-check
+        if (postFrustumCheck) {
+          visitedKeys.add(neighborChunkKey);
+        }
       }
     }
   }
 
-  const visibleChunkInfos = Array.from(visibleChunks.values());
-  if (visibleChunkInfos.length === 0) {
-    console.log(
-      "No visible chunks found",
-      startChunkPos,
-      frustumPlanes,
-      cameraPosition,
-      startChunkInfo,
-      startChunkKey,
-      startChunkInfo.position,
-    )
-    return [];
-  }
+  let finalVisibleChunks = Array.from(visibleChunks.values());
 
   if (postFrustumCheck) {
-    return visibleChunkInfos.filter(chunkInfo => Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb));
+    finalVisibleChunks = finalVisibleChunks.filter(chunkInfo => {
+      const intersectStart = performance.now();
+      const intersects = Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb);
+      totalIntersectionTime += performance.now() - intersectStart;
+      return intersects;
+    });
   }
 
-  return visibleChunkInfos;
+
+  // Log only if start chunk existed
+  if (startChunkInfo) {
+    if (finalVisibleChunks.length === 0) {
+      console.log(
+        "No visible chunks found after culling",
+        startChunkPos,
+        cameraPosition,
+        // frustumPlanes,
+        // startChunkInfo,
+        // startChunkKey,
+        // startChunkInfo.position,
+      )
+    }
+  }
+
+  return finalVisibleChunks;
 };
 
 
@@ -847,7 +891,9 @@ export class Renderer {
     passEncoder: GPURenderPassEncoder,
     visibleChunkInfos: ChunkGeometryInfo[]
   ): { drawnChunks: number; totalTriangles: number } {
+    const startTime = performance.now();
     if (visibleChunkInfos.length === 0) {
+      // console.log(`drawVoxelScene took 0.00ms (no chunks).`);
       return { drawnChunks: 0, totalTriangles: 0 };
     }
 
@@ -868,7 +914,6 @@ export class Renderer {
       drawnChunks++;
     }
 
-    // Return drawn count and triangles based on the loops
     return { drawnChunks, totalTriangles };
   }
 
@@ -886,6 +931,17 @@ export class Renderer {
     enableDebugView = true,
     enableAdvancedCulling = false
   ): { totalTriangles: number; drawnChunks: number } {
+    const frameStartTime = performance.now();
+    let extractPlanesDuration = 0;
+    let cullChunksDuration = 0;
+    let drawSceneDuration = 0;
+    let highlightGenDuration = 0;
+    let debugGenDuration = 0;
+    let writeUniformsDuration = 0;
+    let getTextureViewDuration = 0;
+    let renderPassDuration = 0;
+    let submitDuration = 0;
+
     // Use the potentially updated aspect ratio
     const currentAspect = this.aspect; // Use internal aspect state
 
@@ -925,12 +981,15 @@ export class Renderer {
       mat4.multiply(this.vpMatrixDebug, this.projectionMatrixDebug, this.viewMatrixDebug);
 
       // Calculate the main frustum corners in world space for drawing
+      const frustumCornersStart = performance.now();
       worldFrustumCorners = Renderer.getFrustumCornersWorldSpace(invVpMatrix);
+      // Add timing for frustum corner calculation if needed later
       // Set the active VP matrix to the debug one for rendering voxels/lines
       activeVpMatrix = this.vpMatrixDebug;
     }
 
     // --- Write Uniform Buffers (Before Render Pass) ---
+    const writeUniformsStart = performance.now();
 
     // Main Uniform Buffer (VP + Lighting)
     const uniformData = new Float32Array(24); // 16 MVP + 4 LightDir + 4 LightColor + 4 Ambient + pad? = 24 floats
@@ -959,10 +1018,16 @@ export class Renderer {
     const identityMatrix = mat4.create(); // For crosshair
     this.device.queue.writeBuffer(this.uiUniformBuffer, 0, identityMatrix as Float32Array); // Write identity for now
 
+    writeUniformsDuration = performance.now() - writeUniformsStart;
+
 
     // --- Begin Render Pass ---
     const commandEncoder = this.device.createCommandEncoder();
+    const getTextureViewStart = performance.now();
     const textureView = this.context.getCurrentTexture().createView();
+    getTextureViewDuration = performance.now() - getTextureViewStart;
+
+    const passEncoderStart = performance.now();
     const passEncoder = commandEncoder.beginRenderPass({
       label: "Main Render Pass",
       colorAttachments: [
@@ -990,20 +1055,28 @@ export class Renderer {
 
 
     // --- Cull Chunks and Prepare Visible List ---
-    const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
+    const extractPlanesStart = performance.now();
+    const frustumPlanes = extractFrustumPlanes(this.vpMatrix); // TODO: Add timing inside extractFrustumPlanes if needed
+    extractPlanesDuration = performance.now() - extractPlanesStart;
+
+    const cullChunksStart = performance.now();
     const visibleChunks = cullChunks(
       this.chunkManager.chunkGeometryInfo,
       frustumPlanes,
       cameraPosition,
       enableAdvancedCulling
     );
+    cullChunksDuration = performance.now() - cullChunksStart; // Note: cullChunks logs its internal time too
+
     const totalChunks = this.chunkManager.chunkGeometryInfo.size;
     const culledChunkCount = totalChunks - visibleChunks.length;
 
 
     // --- Draw Voxel Scene ---
     // Voxel scene uses the 'activeVpMatrix' (normal or debug) via the main uniform buffer/bind group
+    const drawSceneStart = performance.now();
     const sceneStats = this.drawVoxelScene(passEncoder, visibleChunks);
+    drawSceneDuration = performance.now() - drawSceneStart;
 
     // Update debug info (more accurate now)
     this.debugInfo.totalChunks = totalChunks;
@@ -1017,7 +1090,10 @@ export class Renderer {
     let totalHighlightVertices = 0;
     if (highlightedBlockPositions.length > 0) {
       const numberOfHighlightedCubes = highlightedBlockPositions.length;
+      const highlightGenStart = performance.now();
       const highlightVertexData = this.generateHighlightVertices(highlightedBlockPositions);
+      highlightGenDuration = performance.now() - highlightGenStart; // Timing for generation only
+
       totalHighlightVertices = numberOfHighlightedCubes * 24; // 24 vertices per cube (12 lines * 2 vertices)
 
       // Resize buffer if needed
@@ -1031,9 +1107,11 @@ export class Renderer {
         });
         console.warn("Resized highlight vertex buffer to:", this.highlightVertexBufferSize);
       }
+      // Measure buffer writes separately if needed
       this.device.queue.writeBuffer(this.highlightVertexBuffer, 0, highlightVertexData);
 
       // Update the UI buffer with the *active* VP matrix for highlights
+      // This write is quick, could be included in writeUniformsDuration or measured separately
       this.device.queue.writeBuffer(this.uiUniformBuffer, 0, activeVpMatrix as Float32Array);
 
       passEncoder.setPipeline(this.highlightPipeline);
@@ -1044,16 +1122,17 @@ export class Renderer {
 
 
     // --- Draw Debug Lines ---
-    // Debug lines use the 'activeVpMatrix' via the main uniform buffer/bind group
     if (enableDebugView) {
       // Uniform buffer (main) already contains activeVpMatrix
 
-      const lineData = generateDebugLineVertices(
+      const debugGenStart = performance.now();
+      const lineData = generateDebugLineVertices( // TODO: Add timing inside generateDebugLineVertices if needed
         this.chunkManager,
         frustumPlanes, // Color/cull based on main frustum
         debugCamera ? worldFrustumCorners : [], // Draw main frustum corners only if debug view active
         cameraPosition, // Player position for coloring chunks
       );
+      debugGenDuration = performance.now() - debugGenStart; // Timing for generation only
 
       // Resize debug line buffer if necessary
       if (lineData.byteLength > this.debugLineBufferSize) {
@@ -1067,17 +1146,17 @@ export class Renderer {
         console.warn("Resized debug line buffer to:", this.debugLineBufferSize);
       }
       if (lineData.byteLength > 0) {
+        // Measure buffer write separately if needed
         this.device.queue.writeBuffer(this.debugLineBuffer, 0, lineData);
 
         // drawDebugLines uses the Renderer instance to get the linePipeline etc.
         // It should use the main bind group (binding 0) which holds the active VP matrix
+        // TODO: Add timing inside drawDebugLines if needed
         drawDebugLines(passEncoder, this, lineData, activeVpMatrix); // Pass vertex count
       }
     }
 
     // --- Draw Crosshair ---
-    // Crosshair uses the UI uniform buffer/bind group (identity matrix)
-    // Make sure UI buffer has identity matrix again if highlights changed it
     this.device.queue.writeBuffer(this.uiUniformBuffer, 0, identityMatrix as Float32Array);
 
     passEncoder.setPipeline(this.highlightPipeline); // Use highlight pipe (no depth write, simple shader)
@@ -1088,13 +1167,28 @@ export class Renderer {
 
     // --- Finish Up ---
     passEncoder.end();
-    this.device.queue.submit([commandEncoder.finish()]);
+    renderPassDuration = performance.now() - passEncoderStart; // Time from beginRenderPass to end
 
-    // Return overall stats
+    const submitStart = performance.now();
+    this.device.queue.submit([commandEncoder.finish()]);
+    submitDuration = performance.now() - submitStart;
+
+    // const totalFrameDuration = performance.now() - frameStartTime;
+    // Log detailed timings (consider sampling this, e.g., every 60 frames, to avoid console spam)
+    // console.log(`renderFrame: ${totalFrameDuration.toFixed(2)}ms [ ` +
+    //   `ExtractPlanes: ${extractPlanesDuration.toFixed(2)}, ` +
+    //   `Cull: ${cullChunksDuration.toFixed(2)}, ` +
+    //   `DrawScene: ${drawSceneDuration.toFixed(2)}, ` +
+    //   `HighlightGen: ${highlightGenDuration.toFixed(2)}, ` +
+    //   `DebugGen: ${debugGenDuration.toFixed(2)}, ` +
+    //   `WriteUniforms: ${writeUniformsDuration.toFixed(2)}, ` +
+    //   `GetTexView: ${getTextureViewDuration.toFixed(2)}, ` +
+    //   `RenderPass: ${renderPassDuration.toFixed(2)}, ` +
+    //   `Submit: ${submitDuration.toFixed(2)} ]`);
+
     return {
       totalTriangles: sceneStats.totalTriangles,
       drawnChunks: sceneStats.drawnChunks,
-      // Consider returning culledChunks as well if needed externally
     };
   }
 
@@ -1168,6 +1262,7 @@ export class Renderer {
 
   // Helper to generate wireframe cube vertices for highlighting
   private generateHighlightVertices(positions: vec3[]): Float32Array {
+    const startTime = performance.now();
     const verticesPerCube = 24; // 12 lines * 2 vertices per line
     const floatsPerVertex = 6; // 3 pos, 3 color
     const totalFloats = positions.length * verticesPerCube * floatsPerVertex;
@@ -1215,6 +1310,8 @@ export class Renderer {
         data[offset++] = HIGHLIGHT_COLOR[2];
       }
     }
+    const duration = performance.now() - startTime;
+    // console.log(`generateHighlightVertices took ${duration.toFixed(2)}ms.`); // Logged in renderFrame now
     return data;
   }
 }

@@ -543,7 +543,7 @@ export class ChunkManager {
     existingChunkInfo.vertexOffsetBytes = vertexOffsetBytes;
     existingChunkInfo.firstIndex = finalFirstIndex;
     existingChunkInfo.baseVertex = finalBaseVertex;
-    // existingChunkInfo.status remains 'updating'
+    existingChunkInfo.visibilityBits = visibilityBits;
   }
 
   freeChunkGeometryInfo(position: vec3) {

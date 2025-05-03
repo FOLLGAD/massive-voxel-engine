@@ -143,10 +143,6 @@ async function main() {
       // voxelData.set(voxels); // This line is no longer needed
       loadedChunkData.set(key, sharedVoxelData);
       requestedChunkKeys.add(key);
-    } else if (type === "chunkMeshEmpty") {
-      const key = getChunkKey(event.data.position);
-      log("Chunk", `Received empty mesh confirmation for chunk ${key}`);
-      requestedChunkKeys.add(key);
     } else if (type === "chunkMeshUpdated") {
       if (!rendererState) throw new Error("Renderer not found");
 
@@ -161,7 +157,6 @@ async function main() {
         indices: Uint32Array;
         visibilityBits: number;
       };
-      if (!rendererState) return; // Guard against renderer not being ready
       const vertices = new Float32Array(verticesBuffer);
       const indices = new Uint32Array(indicesBuffer);
 
@@ -441,6 +436,51 @@ async function main() {
     );
   };
 
+  let lastHandledChunkPosition: vec3 | null = null;
+  const fn = () => {
+    if (!lastHandledChunkPosition || !vec3.equals(lastHandledChunkPosition, playerState.position)) {
+      lastHandledChunkPosition = vec3.clone(playerState.position);
+
+      const playerChunk = getChunkOfPosition(playerState.position);
+
+      for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
+        for (
+          let zOffset = -LOAD_RADIUS_XZ;
+          zOffset <= LOAD_RADIUS_XZ;
+          zOffset++
+        ) {
+          for (
+            let xOffset = -LOAD_RADIUS_XZ;
+            xOffset <= LOAD_RADIUS_XZ;
+            xOffset++
+          ) {
+            const chunkPos = vec3.fromValues(
+              playerChunk[0] + xOffset,
+              playerChunk[1] + yOffset,
+              playerChunk[2] + zOffset
+            );
+            const key = getChunkKey(chunkPos);
+            if (!requestedChunkKeys.has(key)) {
+              log("Chunk", `Requesting chunk: ${key}`);
+              requestedChunkKeys.add(key);
+              workerManager.queueTask({
+                type: "requestChunk",
+                position: chunkPos,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    setTimeout(
+      () => requestIdleCallback(fn, { timeout: 1000 }),
+      1000
+    );
+  };
+
+  fn();
+
   unloadChunks();
 
   let debugCameraEnabled = false;
@@ -449,6 +489,7 @@ async function main() {
   // --- Game Loop Function ---
   let lastTotalTriangles = 0;
   function frame(deltaTime: number) {
+    console.time("frame"); // Profile the entire frame function
     if (!rendererState) return; // Renderer must be initialized
 
     const debugCameraPosition = vec3.fromValues(
@@ -462,16 +503,19 @@ async function main() {
       playerState.position[2]
     );
 
+    console.time("getBlockLookedAt");
     blockLookedAt = getBlockLookedAt(
       playerState.getCameraPosition(),
       cameraYaw
     );
+    console.timeEnd("getBlockLookedAt");
     const highlightedBlockPositions: vec3[] = [];
     if (blockLookedAt?.block) {
       highlightedBlockPositions.push(blockLookedAt.block);
     }
 
     // --- Rendering ---
+    console.time("renderFrame");
     const renderResult = rendererState.renderFrame(
       playerState.getCameraPosition(),
       cameraPitch,
@@ -480,47 +524,20 @@ async function main() {
       fov,
       debugCameraEnabled
         ? {
-            position: debugCameraPosition,
-            target: debugCameraTarget,
-          }
+          position: debugCameraPosition,
+          target: debugCameraTarget,
+        }
         : undefined,
       debugMode,
       enableAdvancedCulling
     );
+    console.timeEnd("renderFrame");
     lastTotalTriangles = renderResult.totalTriangles;
 
     const playerChunk = getChunkOfPosition(playerState.position);
 
-    for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
-      for (
-        let zOffset = -LOAD_RADIUS_XZ;
-        zOffset <= LOAD_RADIUS_XZ;
-        zOffset++
-      ) {
-        for (
-          let xOffset = -LOAD_RADIUS_XZ;
-          xOffset <= LOAD_RADIUS_XZ;
-          xOffset++
-        ) {
-          const chunkPos = vec3.fromValues(
-            playerChunk[0] + xOffset,
-            playerChunk[1] + yOffset,
-            playerChunk[2] + zOffset
-          );
-          const key = getChunkKey(chunkPos);
-          if (!requestedChunkKeys.has(key)) {
-            log("Chunk", `Requesting chunk: ${key}`);
-            requestedChunkKeys.add(key);
-            workerManager.queueTask({
-              type: "requestChunk",
-              position: chunkPos,
-            });
-          }
-        }
-      }
-    }
-
     // --- Update Debug Info ---
+    console.time("debugInfoUpdate");
     if (debugInfoElement) {
       if (frameTimes.length >= maxFrameSamples) {
         frameTimes.length = maxFrameSamples - 1;
@@ -549,9 +566,8 @@ Chunk:  (${playerChunk[0]}, ${playerChunk[1]}, ${playerChunk[2]})
 Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(
         2
       )}, ${lookDirection[2].toFixed(2)})
-Chunks: ${rendererState.chunkManager.chunkGeometryInfo.size} (${
-        requestedChunkKeys.size
-      } req)
+Chunks: ${rendererState.chunkManager.chunkGeometryInfo.size} (${requestedChunkKeys.size
+        } req)
 Drawn:  ${rendererState.debugInfo.drawnChunks}
 Culled: ${rendererState.debugInfo.culledChunks}
 Tris:   ${lastTotalTriangles.toLocaleString()}
@@ -560,6 +576,9 @@ Mesh:   ${meshingMode}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
         `.trim();
     }
+    console.timeEnd("debugInfoUpdate");
+
+    console.timeEnd("frame"); // End profiling the entire frame function
   }
 
   let lastFrameTime = performance.now();
