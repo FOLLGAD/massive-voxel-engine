@@ -306,6 +306,8 @@ export class Renderer {
 
     // --- Depth Texture ---
     this.depthTexture = this.configureDepthTexture(device, null);
+    this.canvasWidth = this.context.canvas.width;
+    this.canvasHeight = this.context.canvas.height;
   }
 
   // --- Static Initialization ---
@@ -333,7 +335,7 @@ export class Renderer {
       alphaMode: "opaque",
     });
 
-    const uniformBufferSize = 112; // Correct size based on WGSL uniform layout rules
+    const uniformBufferSize = (16 + 4 + 4 + 4) * Float32Array.BYTES_PER_ELEMENT;
     const uniformBuffer = device.createBuffer({
       label: "Uniform Buffer (Main Scene VP + Lighting)", // Updated label
       size: uniformBufferSize,
@@ -391,12 +393,23 @@ export class Renderer {
       size: 64, // Only needs mat4x4 for VP
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // Sky bind group layout (can reuse if only 1 mat4 buffer)
-    // But pipeline layout might differ if vertex layout is different etc.
-    // Let's reuse the main shared layout for simplicity, assuming sky shader only needs the VP
+    // Create a dedicated layout for the skybox (only VP matrix)
+    const skyBindGroupLayout = device.createBindGroupLayout({
+      label: "Sky Bind Group Layout",
+      entries: [{
+        binding: 0,
+        visibility: GPUShaderStage.VERTEX, // Only vertex shader needs VP
+        buffer: { type: "uniform" },
+      }],
+    });
+    const skyPipelineLayout = device.createPipelineLayout({
+      label: "Sky Pipeline Layout",
+      bindGroupLayouts: [skyBindGroupLayout],
+    });
+    // Sky bind group uses the dedicated sky layout
     const skyBindGroup = device.createBindGroup({
       label: "Sky Bind Group",
-      layout: sharedBindGroupLayout, // Reuses the main layout (binding 0 = VP matrix)
+      layout: skyBindGroupLayout, // Use dedicated sky layout
       entries: [{ binding: 0, resource: { buffer: skyUniformBuffer } }],
     });
 
@@ -406,8 +419,8 @@ export class Renderer {
     const linePipeline = Renderer.createLinePipeline(device, presentationFormat, sharedPipelineLayout);
     // Highlight uses uiPipelineLayout as it typically doesn't need lighting etc.
     const highlightPipeline = Renderer.createHighlightPipeline(device, presentationFormat, uiPipelineLayout); // Use UI layout
-    // Sky uses sharedPipelineLayout (for VP matrix at binding 0)
-    const skyPipeline = Renderer.createSkyPipeline(device, presentationFormat, sharedPipelineLayout); // Create sky pipeline
+    // Sky uses its dedicated skyPipelineLayout
+    const skyPipeline = Renderer.createSkyPipeline(device, presentationFormat, skyPipelineLayout); // Use dedicated sky layout
 
 
     // --- Create Shared Buffers ---
@@ -708,12 +721,10 @@ export class Renderer {
     up: vec3 = vec3.fromValues(0, 1, 0)
   ) {
     const direction = vec3.create();
-    // Ensure pitch is clamped to avoid gimbal lock issues
-    const clampedPitch = Math.max(-Math.PI / 2 + 1e-6, Math.min(Math.PI / 2 - 1e-6, pitch));
-    direction[0] = Math.cos(clampedPitch) * Math.sin(yaw);
-    direction[1] = Math.sin(clampedPitch);
-    direction[2] = Math.cos(clampedPitch) * Math.cos(yaw);
-    // No need to normalize, trigonometric calculation yields a unit vector
+    direction[0] = Math.cos(pitch) * Math.sin(yaw);
+    direction[1] = Math.sin(pitch);
+    direction[2] = Math.cos(pitch) * Math.cos(yaw);
+    vec3.normalize(direction, direction);
 
     const center = vec3.create();
     vec3.add(center, eye, direction);
@@ -740,28 +751,7 @@ export class Renderer {
   // Helper to update the crosshair vertex buffer
   private updateCrosshairBuffer(aspect: number): void {
     const vertices = Renderer.calculateCrosshairVertices(aspect);
-    // Ensure buffer exists and has the correct usage flags
-    if (this.crosshairVertexBuffer && (this.crosshairVertexBuffer.usage & GPUBufferUsage.COPY_DST)) {
-      // Check if buffer size matches
-      if (this.crosshairVertexBuffer.size === vertices.byteLength) {
-        this.device.queue.writeBuffer(this.crosshairVertexBuffer, 0, vertices);
-      } else {
-        console.error(`Crosshair vertex buffer size mismatch. Expected ${vertices.byteLength}, got ${this.crosshairVertexBuffer.size}. Recreating buffer.`);
-        // Recreate buffer if size is wrong (shouldn't happen if aspect calculation is consistent)
-        this.crosshairVertexBuffer.destroy();
-        this.crosshairVertexBuffer = this.device.createBuffer({
-          label: "Crosshair Vertex Buffer",
-          size: vertices.byteLength,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-          mappedAtCreation: true,
-        });
-        new Float32Array(this.crosshairVertexBuffer.getMappedRange()).set(vertices);
-        this.crosshairVertexBuffer.unmap();
-      }
-    } else {
-      console.error("Crosshair vertex buffer is not available or cannot be written to.");
-      // Optionally, recreate the buffer here if it's missing or misconfigured
-    }
+    this.device.queue.writeBuffer(this.crosshairVertexBuffer, 0, vertices);
   }
 
   private configureDepthTexture(
@@ -953,8 +943,6 @@ export class Renderer {
       activeVpMatrix = this.vpMatrixDebug;
     }
 
-    // --- Write Uniform Buffers (Before Render Pass) ---
-
     // Main Uniform Buffer (VP + Lighting)
     const uniformData = new Float32Array(this.uniformBuffer.size / Float32Array.BYTES_PER_ELEMENT);
     // Set VP matrix (either normal or debug) at offset 0 (mat4 = 16 floats)
@@ -1011,7 +999,6 @@ export class Renderer {
     passEncoder.setVertexBuffer(0, this.skyVertexBuffer);
     passEncoder.draw(36);
 
-
     // --- Cull Chunks and Prepare Visible List ---
     const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
     const visibleChunks = cullChunks(
@@ -1023,7 +1010,6 @@ export class Renderer {
     const totalChunks = this.chunkManager.chunkGeometryInfo.size;
     const culledChunkCount = totalChunks - visibleChunks.length;
 
-
     // --- Draw Voxel Scene ---
     // Voxel scene uses the 'activeVpMatrix' (normal or debug) via the main uniform buffer/bind group
     const sceneStats = this.drawVoxelScene(passEncoder, visibleChunks);
@@ -1033,7 +1019,6 @@ export class Renderer {
     this.debugInfo.drawnChunks = sceneStats.drawnChunks;
     this.debugInfo.culledChunks = culledChunkCount; // Calculated during culling
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
-
 
     // --- Prepare and Draw Highlights ---
     // Highlights use the 'activeVpMatrix' but via the UI bind group/buffer
@@ -1094,7 +1079,7 @@ export class Renderer {
 
         // drawDebugLines uses the Renderer instance to get the linePipeline etc.
         // It should use the main bind group (binding 0) which holds the active VP matrix
-        drawDebugLines(passEncoder, this, lineData, this.vpMatrix); // Pass vertex count
+        drawDebugLines(passEncoder, this, lineData, activeVpMatrix); // Pass vertex count
       }
     }
 
