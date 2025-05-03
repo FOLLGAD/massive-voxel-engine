@@ -513,29 +513,29 @@ export class Renderer {
   private static createCubeVertices(): Float32Array {
     // Correct CCW winding for rendering from inside
     return new Float32Array([
-      // Front face (+Z) - rendered from inside, so CCW is different
-      -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0,
-      1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+      // Front face (+Z)
+      -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0, // Triangle 1
+      -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, // Triangle 2
 
       // Back face (-Z)
-      -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0,
-      1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0,
+      1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, // Triangle 3
+      1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, // Triangle 4
 
       // Left face (-X)
-      -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
-      -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0,
+      -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, // Triangle 5
+      -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, // Triangle 6
 
       // Right face (+X)
-      1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0,
-      1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0,
+      1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, // Triangle 7
+      1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, // Triangle 8
 
       // Top face (+Y)
-      -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0,
-      1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0,
+      -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, // Triangle 9
+      -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, // Triangle 10
 
       // Bottom face (-Y)
-      -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0,
-      1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0,
+      -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, // Triangle 11
+      -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, // Triangle 12
     ]);
   }
 
@@ -660,11 +660,11 @@ export class Renderer {
         targets: [{ format: presentationFormat }],
       },
       primitive: {
-        topology: "line-list", // Use line-list for wireframe
+        topology: "line-list",
       },
       depthStencil: {
-        depthWriteEnabled: false, // Don't write to depth buffer (draw over scene)
-        depthCompare: "always", // Draw regardless of depth
+        depthWriteEnabled: false,
+        depthCompare: "less",
         format: "depth24plus",
       },
     });
@@ -721,10 +721,11 @@ export class Renderer {
     up: vec3 = vec3.fromValues(0, 1, 0)
   ) {
     const direction = vec3.create();
-    direction[0] = Math.cos(pitch) * Math.sin(yaw);
-    direction[1] = Math.sin(pitch);
-    direction[2] = Math.cos(pitch) * Math.cos(yaw);
-    vec3.normalize(direction, direction);
+    // Ensure pitch is clamped to avoid gimbal lock issues
+    const clampedPitch = Math.max(-Math.PI / 2 + 1e-6, Math.min(Math.PI / 2 - 1e-6, pitch));
+    direction[0] = Math.cos(clampedPitch) * Math.sin(yaw);
+    direction[1] = Math.sin(clampedPitch);
+    direction[2] = Math.cos(clampedPitch) * Math.cos(yaw);
 
     const center = vec3.create();
     vec3.add(center, eye, direction);
@@ -835,11 +836,6 @@ export class Renderer {
       // Perform perspective divide (w-divide)
       if (worldVec4[3] !== 0) {
         vec4.scale(worldVec4, worldVec4, 1.0 / worldVec4[3]);
-      } else {
-        // Avoid division by zero, though this case is unlikely for valid frustum corners
-        console.warn("Frustum corner resulted in w=0 after inverse VP transform.");
-        // Return a default value or handle appropriately
-        return vec3.create(); // or some other indicator
       }
       return vec3.fromValues(worldVec4[0], worldVec4[1], worldVec4[2]);
     });
@@ -867,11 +863,9 @@ export class Renderer {
 
     // Draw all visible chunks using offsets
     for (const info of visibleChunkInfos) {
-      if (info.indexCount > 0) { // Only draw chunks with geometry
         passEncoder.drawIndexed(info.indexCount, 1, info.firstIndex, info.baseVertex, 0);
         totalTriangles += info.indexCount / 3;
         drawnChunks++;
-      }
     }
 
     // Return drawn count and triangles based on the loops
@@ -892,13 +886,6 @@ export class Renderer {
     enableDebugView = true,
     enableAdvancedCulling = false
   ): { totalTriangles: number; drawnChunks: number } {
-
-    // --- Resize Handling & Aspect Ratio ---
-    // Check if canvas size changed and resize if necessary
-    const canvas = this.context.canvas as HTMLCanvasElement;
-    if (this.canvasWidth !== canvas.clientWidth || this.canvasHeight !== canvas.clientHeight) {
-      this.resize(canvas.clientWidth, canvas.clientHeight);
-    }
     // Use the potentially updated aspect ratio
     const currentAspect = this.aspect; // Use internal aspect state
 
@@ -943,22 +930,24 @@ export class Renderer {
       activeVpMatrix = this.vpMatrixDebug;
     }
 
+    // --- Write Uniform Buffers (Before Render Pass) ---
+
     // Main Uniform Buffer (VP + Lighting)
-    const uniformData = new Float32Array(this.uniformBuffer.size / Float32Array.BYTES_PER_ELEMENT);
+    const uniformData = new Float32Array(24); // 16 MVP + 4 LightDir + 4 LightColor + 4 Ambient + pad? = 24 floats
     // Set VP matrix (either normal or debug) at offset 0 (mat4 = 16 floats)
     uniformData.set(activeVpMatrix);
 
     // Define light data (should ideally come from scene state)
-    const lightDirection = vec3.normalize(vec3.create(), [0.8, 0.6, -0.4]); // Example direction
-    const lightColor = [1.0, 0.95, 0.9]; // Example color
-    const ambientIntensity = 0.25; // Example ambient
+    const lightDirection = vec3.normalize(vec3.create(), [0.8, 0.6, 0.2]);
+    const lightColor = [1.0, 1.0, 0.5]; // Slightly yellowish sunlight
+    const ambientIntensity = 0.7;
 
     // Set light direction (offset 64 bytes / 4 = 16 floats) - vec3 padded to vec4 in buffer
     uniformData.set(lightDirection, 16);
     // Set light color (offset 80 bytes / 4 = 20 floats) - vec3 padded to vec4 in buffer
     uniformData.set(lightColor, 20);
     // Set ambient intensity (offset 96 bytes / 4 = 24 floats) - f32
-    uniformData[24] = ambientIntensity;
+    uniformData[23] = ambientIntensity;
 
     // Write the combined data to the main uniform buffer
     this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
@@ -999,6 +988,7 @@ export class Renderer {
     passEncoder.setVertexBuffer(0, this.skyVertexBuffer);
     passEncoder.draw(36);
 
+
     // --- Cull Chunks and Prepare Visible List ---
     const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
     const visibleChunks = cullChunks(
@@ -1010,6 +1000,7 @@ export class Renderer {
     const totalChunks = this.chunkManager.chunkGeometryInfo.size;
     const culledChunkCount = totalChunks - visibleChunks.length;
 
+
     // --- Draw Voxel Scene ---
     // Voxel scene uses the 'activeVpMatrix' (normal or debug) via the main uniform buffer/bind group
     const sceneStats = this.drawVoxelScene(passEncoder, visibleChunks);
@@ -1019,6 +1010,7 @@ export class Renderer {
     this.debugInfo.drawnChunks = sceneStats.drawnChunks;
     this.debugInfo.culledChunks = culledChunkCount; // Calculated during culling
     this.debugInfo.totalTriangles = sceneStats.totalTriangles;
+
 
     // --- Prepare and Draw Highlights ---
     // Highlights use the 'activeVpMatrix' but via the UI bind group/buffer
@@ -1047,7 +1039,7 @@ export class Renderer {
       passEncoder.setPipeline(this.highlightPipeline);
       passEncoder.setBindGroup(0, this.uiBindGroup); // Use UI bind group (now holds active VP)
       passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
-      passEncoder.draw(totalHighlightVertices); // Draw all highlight vertices
+      passEncoder.draw(totalHighlightVertices, 1, 0, 0); // Draw all highlight vertices
     }
 
 
@@ -1079,7 +1071,7 @@ export class Renderer {
 
         // drawDebugLines uses the Renderer instance to get the linePipeline etc.
         // It should use the main bind group (binding 0) which holds the active VP matrix
-        drawDebugLines(passEncoder, this, lineData, activeVpMatrix); // Pass vertex count
+        drawDebugLines(passEncoder, this, lineData, this.vpMatrix); // Pass vertex count
       }
     }
 
