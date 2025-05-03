@@ -17,7 +17,7 @@ fn vs_main(
     // Transform cube vertex by rotation-only VP matrix
     out.clipPosition = uniforms.vpMatrix * vec4<f32>(position, 1.0);
     // Ensure sky is drawn at the far plane (z = w)
-    // out.clipPosition = vec4(out.clipPosition.xy, out.clipPosition.w, out.clipPosition.w); // <<< COMMENTED OUT
+    out.clipPosition = vec4(out.clipPosition.xy, out.clipPosition.w, out.clipPosition.w);
     // Pass the original vertex position as the direction vector
     // (from origin towards the vertex on the unit cube)
     out.viewDir = position;

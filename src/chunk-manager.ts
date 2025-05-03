@@ -39,6 +39,9 @@ export interface ChunkGeometryInfo {
 
   /** The value added to each index before reading from the vertex buffer. */
   baseVertex: number;
+
+  /** The visibility bits for the chunk. */
+  visibilityBits: number;
 }
 
 export interface MemorySpaceInfo {
@@ -94,8 +97,8 @@ function insertAndMergeFreeBlock(
     if (
       freeList.length > 0 &&
       freeList[freeList.length - 1].offset +
-        freeList[freeList.length - 1].size ===
-        newBlock.offset
+      freeList[freeList.length - 1].size ===
+      newBlock.offset
     ) {
       freeList[freeList.length - 1].size += newBlock.size;
     } else {
@@ -157,7 +160,8 @@ export class ChunkManager {
     vertexSizeBytes: number,
     indexData: Uint32Array,
     indexSizeBytes: number,
-    aabb: AABB
+    aabb: AABB,
+    visibilityBits: number
   ) {
     const key = getChunkKey(position);
 
@@ -173,6 +177,7 @@ export class ChunkManager {
       position: position,
       firstIndex: -1, // Placeholder
       baseVertex: -1, // Placeholder
+      visibilityBits,
     };
     this.chunkGeometryInfo.set(key, chunkGeometryInfo);
 
@@ -361,22 +366,21 @@ export class ChunkManager {
     vertexSizeBytes: number,
     indexData: Uint32Array,
     indexSizeBytes: number,
-    aabb: AABB
+    aabb: AABB,
+    visibilityBits: number
   ) {
     const key = getChunkKey(position);
     const existingChunkInfo = this.chunkGeometryInfo.get(key);
 
     if (!existingChunkInfo) {
-      console.warn(
-        `updateChunkGeometryInfo called for non-existent key ${key}. Adding instead.`
-      );
       this.addChunk(
         position,
         vertexData,
         vertexSizeBytes,
         indexData,
         indexSizeBytes,
-        aabb
+        aabb,
+        visibilityBits
       );
       return;
     }

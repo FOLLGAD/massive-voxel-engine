@@ -69,6 +69,143 @@ const FACE_NORMALS: { [key: string]: [number, number, number] } = {
   back: [0, 0, -1],
 };
 
+const getVoxelIndex = (localPos: vec3): number => {
+  return (
+    localPos[0] +
+    localPos[1] * CHUNK_SIZE_X +
+    localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y
+  );
+};
+
+// --- START Face Connectivity Helpers ---
+
+// Face indices
+const FACE_X_PLUS = 0;
+const FACE_X_MINUS = 1;
+const FACE_Y_PLUS = 2;
+const FACE_Y_MINUS = 3;
+const FACE_Z_PLUS = 4;
+const FACE_Z_MINUS = 5;
+const NUM_FACES = 6;
+
+// Helper to check if a local position is on a specific face
+const isOnFace = (pos: vec3, faceIndex: number): boolean => {
+  switch (faceIndex) {
+    case FACE_X_PLUS:
+      return pos[0] === CHUNK_SIZE_X - 1;
+    case FACE_X_MINUS:
+      return pos[0] === 0;
+    case FACE_Y_PLUS:
+      return pos[1] === CHUNK_SIZE_Y - 1;
+    case FACE_Y_MINUS:
+      return pos[1] === 0;
+    case FACE_Z_PLUS:
+      return pos[2] === CHUNK_SIZE_Z - 1;
+    case FACE_Z_MINUS:
+      return pos[2] === 0;
+    default:
+      return false;
+  }
+};
+
+// Helper to get neighbors (direction 0..5 -> +x, -x, +y, -y, +z, -z)
+const getNeighbor = (pos: vec3, direction: number): vec3 => {
+  const neighbor = vec3.clone(pos);
+  const delta: [number, number, number][] = [
+    [1, 0, 0], // +X
+    [-1, 0, 0], // -X
+    [0, 1, 0], // +Y
+    [0, -1, 0], // -Y
+    [0, 0, 1], // +Z
+    [0, 0, -1], // -Z
+  ];
+  vec3.add(neighbor, neighbor, delta[direction]);
+  return neighbor;
+};
+
+// Flood fill function to find connected faces for an air component
+const findConnectedFaces = (
+  startPos: vec3,
+  visitedArr: boolean[],
+  chunkData: Uint8Array
+): number => {
+  const startIndex = getVoxelIndex(startPos);
+  // Initial check redundant if called correctly, but safe
+  if (visitedArr[startIndex] || isVoxelSolid(chunkData[startIndex])) {
+    return 0;
+  }
+
+  let componentFacesMask = 0;
+  const queue: vec3[] = [];
+  queue.push(startPos);
+  visitedArr[startIndex] = true;
+
+  let head = 0;
+  while (head < queue.length) {
+    // Using queue as FIFO, check size limit if necessary
+    if (queue.length > CHUNK_VOLUME * 2) {
+      log.error("Chunk", "Flood fill queue grew too large, aborting.");
+      // Return what we found so far, might be incomplete but avoids infinite loops
+      return componentFacesMask;
+    }
+
+    const currentPos = queue[head++]; // Dequeue
+
+    // Check which boundary faces this voxel touches
+    for (let face = 0; face < NUM_FACES; face++) {
+      if (isOnFace(currentPos, face)) {
+        componentFacesMask |= 1 << face;
+      }
+    }
+
+    // Add valid, unvisited, air neighbors to queue
+    for (let dir = 0; dir < 6; dir++) {
+      const neighborPos = getNeighbor(currentPos, dir);
+
+      // Check bounds
+      if (
+        neighborPos[0] < 0 ||
+        neighborPos[0] >= CHUNK_SIZE_X ||
+        neighborPos[1] < 0 ||
+        neighborPos[1] >= CHUNK_SIZE_Y ||
+        neighborPos[2] < 0 ||
+        neighborPos[2] >= CHUNK_SIZE_Z
+      ) {
+        continue;
+      }
+
+      const neighborIndex = getVoxelIndex(neighborPos);
+      if (
+        !visitedArr[neighborIndex] &&
+        !isVoxelSolid(chunkData[neighborIndex])
+      ) {
+        visitedArr[neighborIndex] = true;
+        queue.push(neighborPos);
+      }
+    }
+  }
+
+  return componentFacesMask;
+};
+
+// Function to get the bit index (0-14) for a pair of faces (face1 < face2)
+export const getPairBitIndex = (face1: number, face2: number): number => {
+  if (face1 > face2) {
+    // biome-ignore lint/style/noParameterAssign: <explanation>
+    [face1, face2] = [face2, face1];
+  }
+
+  let sumBeforeRow = 0;
+  for (let k = 0; k < face1; k++) {
+    // Number of pairs starting with k is (NUM_FACES - 1 - k)
+    sumBeforeRow += NUM_FACES - 1 - k;
+  }
+  const indexInRow = face2 - face1 - 1;
+  return sumBeforeRow + indexInRow;
+};
+
+// --- END Face Connectivity Helpers ---
+
 export class Chunk {
   position: vec3;
   data: Uint8Array;
@@ -83,16 +220,8 @@ export class Chunk {
     return chunk;
   }
 
-  getVoxelIndex(localPos: vec3): number {
-    return (
-      localPos[0] +
-      localPos[1] * CHUNK_SIZE_X +
-      localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y
-    );
-  }
-
   getVoxel(localPos: vec3): VoxelType {
-    const index = this.getVoxelIndex(localPos);
+    const index = getVoxelIndex(localPos);
     if (
       localPos[0] < 0 ||
       localPos[0] >= CHUNK_SIZE_X ||
@@ -124,7 +253,7 @@ export class Chunk {
     ) {
       return;
     }
-    const index = this.getVoxelIndex(localPos);
+    const index = getVoxelIndex(localPos);
     // biome-ignore lint/style/noNonNullAssertion: <explanation>
     this.data![index] = type;
   }
@@ -257,7 +386,7 @@ export class Chunk {
         // Now, generate geometry from the mask
         maskIndex = 0;
         for (let j = 0; j < dims[v]; ++j) {
-          for (let i = 0; i < dims[u]; ) {
+          for (let i = 0; i < dims[u];) {
             const maskVal = mask[maskIndex];
             if (maskVal !== 0) {
               const voxelType = Math.abs(maskVal) as VoxelType;
@@ -408,6 +537,47 @@ export class Chunk {
     } else {
       return this.generateNaiveMesh();
     }
+  }
+
+  // Calculates a 15-bit integer where each bit indicates if two distinct faces
+  // are connected by a path of air voxels within the chunk.
+  generateVisibilityMatrix(): number {
+    const visitedArr = new Array(CHUNK_VOLUME).fill(false);
+    let conjoinedSides = 0; // 15-bit result
+
+    for (let z = 0; z < CHUNK_SIZE_Z; z++) {
+      for (let y = 0; y < CHUNK_SIZE_Y; y++) {
+        for (let x = 0; x < CHUNK_SIZE_X; x++) {
+          const pos = vec3.fromValues(x, y, z);
+          const index = getVoxelIndex(pos);
+
+          // Start flood fill from any unvisited air voxel
+          if (!visitedArr[index] && !isVoxelSolid(this.data[index])) {
+            const componentFacesMask = findConnectedFaces(
+              pos,
+              visitedArr,
+              this.data
+            );
+
+            // Update conjoinedSides based on face pairs touched by this component
+            for (let i = 0; i < NUM_FACES; i++) {
+              if ((componentFacesMask & (1 << i)) !== 0) {
+                // If face 'i' is touched...
+                for (let j = i + 1; j < NUM_FACES; j++) {
+                  if ((componentFacesMask & (1 << j)) !== 0) {
+                    // ...and face 'j' is also touched, they are connected.
+                    const bitIndex = getPairBitIndex(i, j);
+                    conjoinedSides |= 1 << bitIndex;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return conjoinedSides;
   }
 }
 

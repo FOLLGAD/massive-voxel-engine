@@ -25,7 +25,7 @@ import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
 
 let debugMode = false;
-
+let enableAdvancedCulling = false;
 log("Main", "Main script loaded.");
 
 const FACE_NORMALS = {
@@ -42,7 +42,6 @@ const loadedChunkData = new Map<string, Uint8Array>();
 const requestedChunkKeys = new Set<string>();
 const playerState = new PlayerState();
 let rendererState: Renderer; // Will be initialized later
-const keysUpdatedSinceLastSync: string[] = [];
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
@@ -155,10 +154,12 @@ async function main() {
         position,
         vertices: verticesBuffer,
         indices: indicesBuffer,
+        visibilityBits,
       } = event.data as {
         position: vec3;
         vertices: Float32Array;
         indices: Uint32Array;
+        visibilityBits: number;
       };
       if (!rendererState) return; // Guard against renderer not being ready
       const vertices = new Float32Array(verticesBuffer);
@@ -175,34 +176,18 @@ async function main() {
         vec3.fromValues(maxX, maxY, maxZ)
       );
 
-      const key = getChunkKey(position);
-
-      // Determine if it's an update or a new add based on chunkManager state
-      const isUpdate = rendererState.chunkManager.chunkGeometryInfo.has(key);
-
       try {
-        if (isUpdate) {
-          rendererState.chunkManager.updateChunkGeometryInfo(
-            position,
-            vertices,
-            vertices.byteLength,
-            indices,
-            indices.byteLength,
-            aabb
-          );
-        } else {
-          rendererState.chunkManager.addChunk(
-            position,
-            vertices,
-            vertices.byteLength,
-            indices,
-            indices.byteLength,
-            aabb
-          );
-        }
-        // Track the key if add/update didn't throw
-        keysUpdatedSinceLastSync.push(key);
+        rendererState.chunkManager.updateChunkGeometryInfo(
+          position,
+          vertices,
+          vertices.byteLength,
+          indices,
+          indices.byteLength,
+          aabb,
+          visibilityBits
+        );
       } catch (error) {
+        const key = getChunkKey(position);
         log.error("Main", `Error processing mesh update for ${key}:`, error);
       }
     } else {
@@ -230,7 +215,7 @@ async function main() {
 
     // Raycast to find the block the player is looking at
     const MAX_DISTANCE = 20.0; // Maximum distance to check for blocks
-    const STEP_SIZE = 0.02; // Size of each step along the ray
+    const STEP_SIZE = 0.01; // Size of each step along the ray
 
     const currentPos = vec3.clone(rayStart);
     const lastPos = vec3.clone(currentPos);
@@ -353,6 +338,9 @@ async function main() {
     if (keyboardState.pressedKeys.has("KeyV")) {
       debugMode = !debugMode;
     }
+    if (keyboardState.pressedKeys.has("KeyT")) {
+      enableAdvancedCulling = !enableAdvancedCulling;
+    }
     if (keyboardState.downKeys.has("KeyH")) {
       fov += 0.01;
     }
@@ -374,7 +362,7 @@ async function main() {
       }
       updateToolbar();
     }
-    if (keyboardState.mouseClicked && blockLookedAt) {
+    if (keyboardState.mouseDown && blockLookedAt) {
       const { block } = blockLookedAt;
       const chunkData = loadedChunkData.get(
         getChunkKey(getChunkOfPosition(block))
@@ -496,7 +484,8 @@ async function main() {
             target: debugCameraTarget,
           }
         : undefined,
-      debugMode
+      debugMode,
+      enableAdvancedCulling
     );
     lastTotalTriangles = renderResult.totalTriangles;
 
