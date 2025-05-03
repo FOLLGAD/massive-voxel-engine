@@ -106,7 +106,6 @@ const cullChunks = (
     totalIntersectionTime += performance.now() - intersectStartInitial;
     console.warn("Starting chunk is outside frustum, returning empty.");
     const duration = performance.now() - startTime;
-    console.log(`cullChunks (Advanced - Start Culled) took ${duration.toFixed(2)}ms. Intersection tests took ${totalIntersectionTime.toFixed(2)}ms.`);
     return []; // Early exit if start chunk is culled
   }
   totalIntersectionTime += performance.now() - intersectStartInitial;
@@ -893,7 +892,6 @@ export class Renderer {
   ): { drawnChunks: number; totalTriangles: number } {
     const startTime = performance.now();
     if (visibleChunkInfos.length === 0) {
-      // console.log(`drawVoxelScene took 0.00ms (no chunks).`);
       return { drawnChunks: 0, totalTriangles: 0 };
     }
 

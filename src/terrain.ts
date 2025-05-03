@@ -135,7 +135,7 @@ export class Terrain {
   generateTerrain(position: vec3) {
     const terrainConfigs = {
       normal: {
-        overallAmplitude: 100,
+        overallAmplitude: 150,
         baseHeight: 10,
         stoneDepth: 4,
         terrainScale: 0.001,
