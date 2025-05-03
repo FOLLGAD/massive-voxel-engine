@@ -149,31 +149,24 @@ const cullChunks = (
       // --- Occlusion Check --- 
       let canSeeNeighbor = false;
       if (entryFace === -1) {
-        // Expanding from the starting chunk, always potentially visible (subject to frustum)
         canSeeNeighbor = true;
+        visitedKeys.add(neighborChunkKey);
       } else {
-        // Came into currentChunk via entryFace, exiting via exitFace.
-        // Check if these faces are connected within currentChunk.
         if (entryFace === exitFace) {
-          // Trying to go back the way we came - skip this direction.
           continue;
         }
-        // Use the passed-in or globally available function
         const bitIndex = getPairBitIndex(entryFace, exitFace);
         if (bitIndex !== -1 && (currentVisibilityBits & (1 << bitIndex)) !== 0) {
           canSeeNeighbor = true;
         }
-        // If bitIndex is -1 or bit is not set, canSeeNeighbor remains false (occluded)
       }
-
-      // Mark as visited now, regardless of outcome, to prevent cycles
-      visitedKeys.add(neighborChunkKey);
 
       // --- Visibility Decision --- 
       if (canSeeNeighbor) {
         const neighborEntryFace = getOppositeFace(exitFace);
         queue.push([neighborChunkInfo, neighborEntryFace]);
         visibleChunks.set(neighborChunkKey, neighborChunkInfo);
+        visitedKeys.add(neighborChunkKey);
       }
     }
   }
