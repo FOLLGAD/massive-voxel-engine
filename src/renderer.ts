@@ -705,9 +705,10 @@ export class Renderer {
       primitive: {
         topology: "line-list",
       },
+      // Restore depth testing, keep less-equal compare
       depthStencil: {
-        depthWriteEnabled: false,
-        depthCompare: "less",
+        depthWriteEnabled: false, // Don't write depth for lines
+        depthCompare: "less-equal",
         format: "depth24plus",
       },
     });
