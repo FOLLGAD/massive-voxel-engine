@@ -488,8 +488,12 @@ async function main() {
   let blockLookedAt: ReturnType<typeof getBlockLookedAt> | null = null;
   // --- Game Loop Function ---
   let lastTotalTriangles = 0;
+  let lastFrameTime = performance.now();
+  let physicsTimeMs = 0;
+  let renderTimeMs = 0;
+  let lookAtTimeMs = 0;
   function frame(deltaTime: number) {
-    console.time("frame"); // Profile the entire frame function
+    // console.time("frame"); // Profile the entire frame function
     if (!rendererState) return; // Renderer must be initialized
 
     const debugCameraPosition = vec3.fromValues(
@@ -503,19 +507,22 @@ async function main() {
       playerState.position[2]
     );
 
-    console.time("getBlockLookedAt");
+    // console.time("getBlockLookedAt");
+    const lookAtStart = performance.now();
     blockLookedAt = getBlockLookedAt(
       playerState.getCameraPosition(),
       cameraYaw
     );
-    console.timeEnd("getBlockLookedAt");
+    lookAtTimeMs = performance.now() - lookAtStart;
+    // console.timeEnd("getBlockLookedAt");
     const highlightedBlockPositions: vec3[] = [];
     if (blockLookedAt?.block) {
       highlightedBlockPositions.push(blockLookedAt.block);
     }
 
     // --- Rendering ---
-    console.time("renderFrame");
+    // console.time("renderFrame");
+    const renderStart = performance.now();
     const renderResult = rendererState.renderFrame(
       playerState.getCameraPosition(),
       cameraPitch,
@@ -531,13 +538,14 @@ async function main() {
       debugMode,
       enableAdvancedCulling
     );
-    console.timeEnd("renderFrame");
+    renderTimeMs = performance.now() - renderStart;
+    // console.timeEnd("renderFrame");
     lastTotalTriangles = renderResult.totalTriangles;
 
     const playerChunk = getChunkOfPosition(playerState.position);
 
     // --- Update Debug Info ---
-    console.time("debugInfoUpdate");
+    // console.time("debugInfoUpdate");
     if (debugInfoElement) {
       if (frameTimes.length >= maxFrameSamples) {
         frameTimes.length = maxFrameSamples - 1;
@@ -571,24 +579,28 @@ Chunks: ${rendererState.chunkManager.chunkGeometryInfo.size} (${requestedChunkKe
 Drawn:  ${rendererState.debugInfo.drawnChunks}
 Culled: ${rendererState.debugInfo.culledChunks}
 Tris:   ${lastTotalTriangles.toLocaleString()}
-FPS:    ${fps.toFixed(1)}
+FPS:    ${fps.toFixed(1)} (${avgDelta.toFixed(2)} ms)
+Physics:${physicsTimeMs.toFixed(2)} ms
+Render: ${renderTimeMs.toFixed(2)} ms
+LookAt: ${lookAtTimeMs.toFixed(2)} ms
 Mesh:   ${meshingMode}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
         `.trim();
     }
-    console.timeEnd("debugInfoUpdate");
+    // console.timeEnd("debugInfoUpdate");
 
-    console.timeEnd("frame"); // End profiling the entire frame function
+    // console.timeEnd("frame"); // End profiling the entire frame function
   }
 
-  let lastFrameTime = performance.now();
   const frameLoop = () => {
     const now = performance.now();
     const deltaTime = now - lastFrameTime;
     lastFrameTime = now;
 
     // Process physics and potentially queue more chunk updates via worker tasks
+    const physicsStart = performance.now();
     physicsStep(deltaTime);
+    physicsTimeMs = performance.now() - physicsStart;
 
     // Render the frame (will only draw 'ready' chunks)
     frame(deltaTime);
