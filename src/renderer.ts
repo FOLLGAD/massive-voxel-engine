@@ -100,17 +100,6 @@ const cullChunks = (
     return [];
   }
 
-  // Initial frustum check for the starting chunk
-  const intersectStartInitial = performance.now();
-  if (!Renderer.intersectFrustumAABB(frustumPlanes, startChunkInfo.aabb)) {
-    totalIntersectionTime += performance.now() - intersectStartInitial;
-    console.warn("Starting chunk is outside frustum, returning empty.");
-    const duration = performance.now() - startTime;
-    return []; // Early exit if start chunk is culled
-  }
-  totalIntersectionTime += performance.now() - intersectStartInitial;
-
-
   const visibleChunks = new Map<string, ChunkGeometryInfo>(); // Stores potentially visible chunks
   const queue: [ChunkGeometryInfo, number][] = []; // [chunkInfo, entryFaceIndex]
   const visitedKeys = new Set<string>(); // Track keys added to queue to prevent cycles/redundancy
@@ -404,29 +393,14 @@ export class Renderer {
       entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
     });
 
-    // --- UI buffer/group ---
     const uiUniformBuffer = device.createBuffer({
-      label: "UI Uniform Buffer (VP Matrix)", // Will hold identity or ortho projection
-      size: 64, // Only needs mat4x4 for VP
+      label: "UI Uniform Buffer (Identity Matrix)",
+      size: uniformBufferSize,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    // UI needs its own bind group layout if buffer size/structure differs
-    const uiBindGroupLayout = device.createBindGroupLayout({
-      label: "UI Bind Group Layout",
-      entries: [{
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "uniform" },
-      }],
-    });
-    // UI needs its own pipeline layout
-    const uiPipelineLayout = device.createPipelineLayout({
-      label: "UI Pipeline Layout",
-      bindGroupLayouts: [uiBindGroupLayout],
     });
     const uiBindGroup = device.createBindGroup({
       label: "UI Bind Group",
-      layout: uiBindGroupLayout, // Use UI layout
+      layout: sharedBindGroupLayout, // Use UI layout
       entries: [{ binding: 0, resource: { buffer: uiUniformBuffer } }],
     });
 
@@ -461,7 +435,7 @@ export class Renderer {
     const voxelPipeline = Renderer.createVoxelPipeline(device, presentationFormat, sharedPipelineLayout);
     const linePipeline = Renderer.createLinePipeline(device, presentationFormat, sharedPipelineLayout);
     // Highlight uses uiPipelineLayout as it typically doesn't need lighting etc.
-    const highlightPipeline = Renderer.createHighlightPipeline(device, presentationFormat, uiPipelineLayout); // Use UI layout
+    const highlightPipeline = Renderer.createHighlightPipeline(device, presentationFormat, sharedPipelineLayout); // Use UI layout
     // Sky uses its dedicated skyPipelineLayout
     const skyPipeline = Renderer.createSkyPipeline(device, presentationFormat, skyPipelineLayout); // Use dedicated sky layout
 
@@ -1000,11 +974,8 @@ export class Renderer {
     const lightColor = [1.0, 1.0, 0.5]; // Slightly yellowish sunlight
     const ambientIntensity = 0.7;
 
-    // Set light direction (offset 64 bytes / 4 = 16 floats) - vec3 padded to vec4 in buffer
     uniformData.set(lightDirection, 16);
-    // Set light color (offset 80 bytes / 4 = 20 floats) - vec3 padded to vec4 in buffer
     uniformData.set(lightColor, 20);
-    // Set ambient intensity (offset 96 bytes / 4 = 24 floats) - f32
     uniformData[23] = ambientIntensity;
 
     // Write the combined data to the main uniform buffer
@@ -1018,7 +989,6 @@ export class Renderer {
     this.device.queue.writeBuffer(this.uiUniformBuffer, 0, identityMatrix as Float32Array); // Write identity for now
 
     writeUniformsDuration = performance.now() - writeUniformsStart;
-
 
     // --- Begin Render Pass ---
     const commandEncoder = this.device.createCommandEncoder();
@@ -1095,7 +1065,6 @@ export class Renderer {
 
       totalHighlightVertices = numberOfHighlightedCubes * 24; // 24 vertices per cube (12 lines * 2 vertices)
 
-      // Resize buffer if needed
       if (highlightVertexData.byteLength > this.highlightVertexBufferSize) {
         this.highlightVertexBuffer.destroy();
         this.highlightVertexBufferSize = Math.max(this.highlightVertexBufferSize * 2, highlightVertexData.byteLength);
@@ -1106,17 +1075,12 @@ export class Renderer {
         });
         console.warn("Resized highlight vertex buffer to:", this.highlightVertexBufferSize);
       }
-      // Measure buffer writes separately if needed
       this.device.queue.writeBuffer(this.highlightVertexBuffer, 0, highlightVertexData);
 
-      // Update the UI buffer with the *active* VP matrix for highlights
-      // This write is quick, could be included in writeUniformsDuration or measured separately
-      this.device.queue.writeBuffer(this.uiUniformBuffer, 0, activeVpMatrix as Float32Array);
-
       passEncoder.setPipeline(this.highlightPipeline);
-      passEncoder.setBindGroup(0, this.uiBindGroup); // Use UI bind group (now holds active VP)
+      passEncoder.setBindGroup(0, this.bindGroup);
       passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
-      passEncoder.draw(totalHighlightVertices, 1, 0, 0); // Draw all highlight vertices
+      passEncoder.draw(totalHighlightVertices, 1, 0, 0);
     }
 
 
