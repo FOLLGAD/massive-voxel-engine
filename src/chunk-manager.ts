@@ -485,8 +485,6 @@ export class ChunkManager {
       key,
     });
 
-    // Queue Write operations for the NEW data
-    // Vertex Write
     if (
       vertexOffsetBytes + vertexData.byteLength >
       this.sharedVertexBuffer.size

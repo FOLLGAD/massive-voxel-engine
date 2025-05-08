@@ -155,7 +155,6 @@ const cullChunks = (
       if (entryFace === -1) {
         // Always consider neighbors of the start chunk visible initially (frustum check happens below)
         canSeeNeighbor = true;
-        // Don't add to visitedKeys here, add it after the frustum check passes
       } else {
         // Don't check visibility from the face we entered from
         if (entryFace === exitFace) {
@@ -1043,7 +1042,6 @@ export class Renderer {
     const visibleChunkCount = visibleChunks.length; // Get count of visible chunks
     const culledChunkCount = totalChunks - visibleChunkCount;
 
-
     // --- Resize Indirect Buffer if Necessary ---
     // Check *before* creating the CPU array if the GPU buffer needs resizing.
     if (visibleChunkCount > this.indirectDrawBufferSizeCommands) {
@@ -1213,7 +1211,7 @@ export class Renderer {
 
     return {
       totalTriangles: 0,
-      drawnChunks: 0,
+      drawnChunks: visibleChunkCount,
     };
   }
 
