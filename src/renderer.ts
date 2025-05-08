@@ -19,6 +19,7 @@ const CROSSHAIR_COLOR = [1.0, 1.0, 1.0]; // White
 const INITIAL_SHARED_VERTEX_BUFFER_SIZE = 1024 * 1024 * 1024; // 1GB
 const INITIAL_SHARED_INDEX_BUFFER_SIZE = 256 * 1024 * 1024;  // 256MB
 const INDEX_FORMAT: GPUIndexFormat = "uint32";
+export const INITIAL_INDIRECT_BUFFER_COMMANDS = 1024; // Max chunks to draw initially
 
 // @ts-ignore
 import voxelShaderCode from "./shaders/voxel.wgsl" with { type: "text" };
@@ -263,6 +264,8 @@ export class Renderer {
   public chunkManager: ChunkManager;
   public sharedVertexBuffer: GPUBuffer;
   public sharedIndexBuffer: GPUBuffer;
+  public indirectDrawBuffer: GPUBuffer; // Buffer for indirect draw commands
+  public indirectDrawBufferSizeCommands: number; // Capacity of the indirect buffer in commands
   private canvasWidth = 0;
   private canvasHeight = 0;
   private aspect = 1.0; // Added aspect ratio state
@@ -289,7 +292,9 @@ export class Renderer {
     skyVertexBuffer: GPUBuffer, // Added sky vertex buffer parameter
     chunkManager: ChunkManager,
     sharedVertexBuffer: GPUBuffer,
-    sharedIndexBuffer: GPUBuffer
+    sharedIndexBuffer: GPUBuffer,
+    indirectDrawBuffer: GPUBuffer, // Add indirect buffer
+    indirectDrawBufferSizeCommands: number // Add size tracking
   ) {
     this.device = device;
     this.context = context;
@@ -314,6 +319,8 @@ export class Renderer {
     this.chunkManager = chunkManager;
     this.sharedVertexBuffer = sharedVertexBuffer;
     this.sharedIndexBuffer = sharedIndexBuffer;
+    this.indirectDrawBuffer = indirectDrawBuffer; // Assign indirect buffer
+    this.indirectDrawBufferSizeCommands = indirectDrawBufferSizeCommands; // Assign size tracking
 
     // Initialize aspect ratio
     this.canvasWidth = this.context.canvas.width;
@@ -493,6 +500,15 @@ export class Renderer {
     skyVertexBuffer.unmap();
 
 
+    // --- Indirect Draw Buffer ---
+    const initialIndirectBufferSize = INITIAL_INDIRECT_BUFFER_COMMANDS * 5 * Uint32Array.BYTES_PER_ELEMENT;
+    const indirectDrawBuffer = device.createBuffer({
+      label: "Indirect Draw Buffer",
+      size: initialIndirectBufferSize,
+      usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+    });
+
+
     // Create the Renderer instance
     const renderer = new Renderer(
       device,
@@ -516,7 +532,9 @@ export class Renderer {
       skyVertexBuffer, // Pass sky vertex buffer
       chunkManager,
       sharedVertexBuffer,
-      sharedIndexBuffer
+      sharedIndexBuffer,
+      indirectDrawBuffer, // Pass indirect buffer
+      INITIAL_INDIRECT_BUFFER_COMMANDS // Pass size tracking
     );
 
     // Write initial UI matrix (identity) *after* Renderer creation
@@ -863,31 +881,16 @@ export class Renderer {
 
   private drawVoxelScene(
     passEncoder: GPURenderPassEncoder,
-    visibleChunkInfos: ChunkGeometryInfo[]
+    visibleChunkCount: number
   ): { drawnChunks: number; totalTriangles: number } {
-    const startTime = performance.now();
-    if (visibleChunkInfos.length === 0) {
+    // const startTime = performance.now();
+    // Check if there's anything to draw
+    if (visibleChunkCount === 0) {
       return { drawnChunks: 0, totalTriangles: 0 };
     }
-
-    passEncoder.setPipeline(this.voxelPipeline);
-    passEncoder.setBindGroup(0, this.bindGroup); // Use main bind group (VP + Lighting)
-
-    // Set the shared buffers ONCE before the loop
-    passEncoder.setVertexBuffer(0, this.sharedVertexBuffer);
-    passEncoder.setIndexBuffer(this.sharedIndexBuffer, INDEX_FORMAT); // Use constant for format
-
-    let totalTriangles = 0;
-    let drawnChunks = 0;
-
-    // Draw all visible chunks using offsets
-    for (const info of visibleChunkInfos) {
-      passEncoder.drawIndexed(info.indexCount, 1, info.firstIndex, info.baseVertex, 0);
-      totalTriangles += info.indexCount / 3;
-      drawnChunks++;
-    }
-
-    return { drawnChunks, totalTriangles };
+    // We can no longer easily sum triangle counts here without reading back data.
+    // Return the number of chunks drawn (which is simply the visible count).
+    return { drawnChunks: visibleChunkCount, totalTriangles: 0 };
   }
 
   // --- Render Frame ---
@@ -921,7 +924,6 @@ export class Renderer {
     // --- Depth Texture ---
     // Ensure depth texture matches current canvas size (configureDepthTexture handles this)
     this.depthTexture = this.configureDepthTexture(this.device, this.depthTexture);
-
 
     // --- Calculate Matrices ---
     // Main camera matrices
@@ -1023,9 +1025,9 @@ export class Renderer {
     passEncoder.draw(36);
 
 
-    // --- Cull Chunks and Prepare Visible List ---
+    // --- Restore Culling --- 
     const extractPlanesStart = performance.now();
-    const frustumPlanes = extractFrustumPlanes(this.vpMatrix); // TODO: Add timing inside extractFrustumPlanes if needed
+    const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
     extractPlanesDuration = performance.now() - extractPlanesStart;
 
     const cullChunksStart = performance.now();
@@ -1035,23 +1037,83 @@ export class Renderer {
       cameraPosition,
       enableAdvancedCulling
     );
-    cullChunksDuration = performance.now() - cullChunksStart; // Note: cullChunks logs its internal time too
+    cullChunksDuration = performance.now() - cullChunksStart;
 
     const totalChunks = this.chunkManager.chunkGeometryInfo.size;
-    const culledChunkCount = totalChunks - visibleChunks.length;
+    const visibleChunkCount = visibleChunks.length; // Get count of visible chunks
+    const culledChunkCount = totalChunks - visibleChunkCount;
 
+
+    // --- Resize Indirect Buffer if Necessary ---
+    // Check *before* creating the CPU array if the GPU buffer needs resizing.
+    if (visibleChunkCount > this.indirectDrawBufferSizeCommands) {
+      this.indirectDrawBuffer.destroy(); // Destroy the old GPU buffer
+      // Calculate new size (e.g., double it or match the required count, whichever is larger)
+      const newSizeCommands = Math.max(this.indirectDrawBufferSizeCommands * 2, visibleChunkCount);
+      this.indirectDrawBufferSizeCommands = newSizeCommands; // Update the tracked capacity
+      // Create the new, larger GPU buffer
+      this.indirectDrawBuffer = this.device.createBuffer({
+        label: "Indirect Draw Buffer (Resized)",
+        size: newSizeCommands * 5 * Uint32Array.BYTES_PER_ELEMENT,
+        usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+      });
+      console.warn("Resized indirect draw buffer to command capacity:", newSizeCommands);
+    }
+
+    // --- Prepare Indirect Draw Buffer Data ---
+    // Create array with full *current* buffer capacity, initialized to zeros.
+    const indirectDrawCommands = new Uint32Array(this.indirectDrawBufferSizeCommands * 5);
+    let indirectOffset = 0;
+    // Fill the beginning with commands for visible chunks.
+    for (const info of visibleChunks) {
+      indirectDrawCommands[indirectOffset++] = info.indexCount; // indexcount
+      indirectDrawCommands[indirectOffset++] = 1; // instanceCount
+      indirectDrawCommands[indirectOffset++] = info.firstIndex; // FirstIndex
+      indirectDrawCommands[indirectOffset++] = info.baseVertex; // baseVertex
+      indirectDrawCommands[indirectOffset++] = 0; // firstInstance
+    }
+
+    // --- Write Indirect Buffer Data ---
+    // Calculate the exact byte size needed for the visible commands
+    const indirectCommandSizeBytes = visibleChunkCount * 5 * Uint32Array.BYTES_PER_ELEMENT;
+    // Write only the necessary part of the CPU array to the GPU buffer.
+    this.device.queue.writeBuffer(
+      this.indirectDrawBuffer,
+      0, // Write from the beginning of the buffer
+      indirectDrawCommands.buffer, // Source buffer
+      indirectDrawCommands.byteOffset, // Source offset
+      indirectCommandSizeBytes // Write only this many bytes
+    );
 
     // --- Draw Voxel Scene ---
     // Voxel scene uses the 'activeVpMatrix' (normal or debug) via the main uniform buffer/bind group
     const drawSceneStart = performance.now();
-    const sceneStats = this.drawVoxelScene(passEncoder, visibleChunks);
+    // Pass only the count of visible chunks
+
+    passEncoder.setPipeline(this.voxelPipeline);
+    passEncoder.setBindGroup(0, this.bindGroup); // Use main bind group (VP + Lighting)
+
+    // Set the shared buffers ONCE
+    passEncoder.setVertexBuffer(0, this.sharedVertexBuffer);
+    passEncoder.setIndexBuffer(this.sharedIndexBuffer, INDEX_FORMAT); // Use constant for format
+
+    // Issue drawIndexedIndirect for each visible chunk command
+    const commandSizeInBytes = 5 * Uint32Array.BYTES_PER_ELEMENT;
+    for (let i = 0; i < visibleChunkCount; i++) {
+      const commandOffsetBytes = i * commandSizeInBytes;
+      passEncoder.drawIndexedIndirect(
+        this.indirectDrawBuffer,
+        commandOffsetBytes
+      );
+    }
+
     drawSceneDuration = performance.now() - drawSceneStart;
 
-    // Update debug info (more accurate now)
+    // Update debug info
     this.debugInfo.totalChunks = totalChunks;
-    this.debugInfo.drawnChunks = sceneStats.drawnChunks;
-    this.debugInfo.culledChunks = culledChunkCount; // Calculated during culling
-    this.debugInfo.totalTriangles = sceneStats.totalTriangles;
+    // this.debugInfo.drawnChunks = sceneStats.drawnChunks;
+    this.debugInfo.culledChunks = culledChunkCount;
+    // this.debugInfo.totalTriangles = sceneStats.totalTriangles; // Is 0 from drawVoxelScene
 
 
     // --- Prepare and Draw Highlights ---
@@ -1082,7 +1144,6 @@ export class Renderer {
       passEncoder.setVertexBuffer(0, this.highlightVertexBuffer);
       passEncoder.draw(totalHighlightVertices, 1, 0, 0);
     }
-
 
     // --- Draw Debug Lines ---
     if (enableDebugView) {
@@ -1126,32 +1187,33 @@ export class Renderer {
     passEncoder.setBindGroup(0, this.uiBindGroup);   // Use UI bind group (identity matrix)
     passEncoder.setVertexBuffer(0, this.crosshairVertexBuffer);
     passEncoder.draw(this.crosshairVertexCount); // Draw 4 vertices
-
+    passEncoder.end();
 
     // --- Finish Up ---
-    passEncoder.end();
     renderPassDuration = performance.now() - passEncoderStart; // Time from beginRenderPass to end
 
     const submitStart = performance.now();
     this.device.queue.submit([commandEncoder.finish()]);
     submitDuration = performance.now() - submitStart;
 
-    // const totalFrameDuration = performance.now() - frameStartTime;
+    const totalFrameDuration = performance.now() - frameStartTime;
     // Log detailed timings (consider sampling this, e.g., every 60 frames, to avoid console spam)
-    // console.log(`renderFrame: ${totalFrameDuration.toFixed(2)}ms [ ` +
-    //   `ExtractPlanes: ${extractPlanesDuration.toFixed(2)}, ` +
-    //   `Cull: ${cullChunksDuration.toFixed(2)}, ` +
-    //   `DrawScene: ${drawSceneDuration.toFixed(2)}, ` +
-    //   `HighlightGen: ${highlightGenDuration.toFixed(2)}, ` +
-    //   `DebugGen: ${debugGenDuration.toFixed(2)}, ` +
-    //   `WriteUniforms: ${writeUniformsDuration.toFixed(2)}, ` +
-    //   `GetTexView: ${getTextureViewDuration.toFixed(2)}, ` +
-    //   `RenderPass: ${renderPassDuration.toFixed(2)}, ` +
-    //   `Submit: ${submitDuration.toFixed(2)} ]`);
+    if (totalFrameDuration > 30) {
+      console.log(`renderFrame: ${totalFrameDuration.toFixed(2)}ms [ ` +
+        `ExtractPlanes: ${extractPlanesDuration.toFixed(2)}, ` +
+        `Cull: ${cullChunksDuration.toFixed(2)}, ` +
+        `DrawScene: ${drawSceneDuration.toFixed(2)}, ` +
+        `HighlightGen: ${highlightGenDuration.toFixed(2)}, ` +
+        `DebugGen: ${debugGenDuration.toFixed(2)}, ` +
+        `WriteUniforms: ${writeUniformsDuration.toFixed(2)}, ` +
+        `GetTexView: ${getTextureViewDuration.toFixed(2)}, ` +
+        `RenderPass: ${renderPassDuration.toFixed(2)}, ` +
+        `Submit: ${submitDuration.toFixed(2)} ]`);
+    }
 
     return {
-      totalTriangles: sceneStats.totalTriangles,
-      drawnChunks: sceneStats.drawnChunks,
+      totalTriangles: 0,
+      drawnChunks: 0,
     };
   }
 

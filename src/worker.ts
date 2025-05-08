@@ -34,22 +34,22 @@ self.onmessage = (event: MessageEvent) => {
           position,
           voxels: chunk.data,
         });
-
-        const mesh = chunk.generateMesh(); // Calls the appropriate mesher based on the flag
-        log(
-          "Worker",
-          `Mesh generated. Vertices count: ${mesh.vertices.length / 9
-          }, Indices count: ${mesh.indices.length}`
-        ); // Vertices are pos+color+normal (9 floats)
-
-        self.postMessage({
-          type: "chunkMeshUpdated",
-          position,
-          vertices: mesh.vertices.buffer,
-          indices: mesh.indices.buffer,
-          visibilityBits: chunk.generateVisibilityMatrix(),
-        });
       }
+
+      const mesh = chunk.generateMesh(); // Calls the appropriate mesher based on the flag
+      log(
+        "Worker",
+        `Mesh generated. Vertices count: ${mesh.vertices.length / 9
+        }, Indices count: ${mesh.indices.length}`
+      ); // Vertices are pos+color+normal (9 floats)
+
+      self.postMessage({
+        type: "chunkMeshUpdated",
+        position,
+        vertices: mesh.vertices.buffer,
+        indices: mesh.indices.buffer,
+        visibilityBits: chunk.generateVisibilityMatrix(),
+      });
     } catch (error) {
       log.error("Worker", "Error during mesh generation or posting:", error);
     }

@@ -25,7 +25,7 @@ import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
 
 let debugMode = false;
-let enableAdvancedCulling = false;
+let enableAdvancedCulling = true;
 log("Main", "Main script loaded.");
 
 const FACE_NORMALS = {
