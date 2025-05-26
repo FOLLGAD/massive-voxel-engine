@@ -69,6 +69,117 @@ const getFaceFromDirection = (direction: number): number => {
 
 // --- Modified cullChunks Function ---
 
+const cullChunksWithCache = (
+  allChunkInfos: Map<string, ChunkGeometryInfo>,
+  frustumPlanes: Plane[],
+  cameraPosition: vec3,
+  enableAdvancedCulling: boolean,
+  cache: {
+    visibleChunks: Set<string>;
+    lastCameraPosition: vec3;
+    lastCameraRotation: { pitch: number; yaw: number };
+    lastFrustumPlanes: Plane[];
+    isValid: boolean;
+  },
+  cameraPitch: number,
+  cameraYaw: number
+): ChunkGeometryInfo[] => {
+  const startTime = performance.now();
+
+  // Check if we can use the cached result
+  const cacheValid = cache.isValid && 
+    vec3.distance(cameraPosition, cache.lastCameraPosition) <= 0.5 && // Use constant from Renderer
+    Math.abs(cameraPitch - cache.lastCameraRotation.pitch) <= 0.02 &&
+    Math.min(
+      Math.abs(cameraYaw - cache.lastCameraRotation.yaw),
+      2 * Math.PI - Math.abs(cameraYaw - cache.lastCameraRotation.yaw)
+    ) <= 0.02;
+
+  let visibleChunks: ChunkGeometryInfo[];
+
+  if (cacheValid && cache.visibleChunks.size > 0) {
+    // Use cached visible set and do incremental updates
+    const incrementalStart = performance.now();
+    
+    // Start with cached visible chunks, but verify they still pass frustum test
+    const stillVisibleChunks: ChunkGeometryInfo[] = [];
+    const newlyVisibleChunks = new Set<string>();
+    
+    // Check if cached chunks are still visible
+    for (const chunkKey of cache.visibleChunks) {
+      const chunkInfo = allChunkInfos.get(chunkKey);
+      if (chunkInfo && Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb)) {
+        stillVisibleChunks.push(chunkInfo);
+        newlyVisibleChunks.add(chunkKey);
+      }
+    }
+
+    // For advanced culling, check neighbors of visible chunks for new additions
+    if (enableAdvancedCulling && stillVisibleChunks.length > 0) {
+      const neighborChunkPos: vec3 = vec3.create();
+      const chunksToCheck = [...stillVisibleChunks];
+      
+      for (const chunkInfo of chunksToCheck) {
+        const currentChunkPos = chunkInfo.position;
+        
+        // Check all 6 neighbors
+        for (let dir = 0; dir < NUM_FACES; dir++) {
+          neighborChunkPos[0] = currentChunkPos[0];
+          neighborChunkPos[1] = currentChunkPos[1];
+          neighborChunkPos[2] = currentChunkPos[2];
+          
+          switch (dir) {
+            case FACE_X_PLUS: neighborChunkPos[0]++; break;
+            case FACE_X_MINUS: neighborChunkPos[0]--; break;
+            case FACE_Y_PLUS: neighborChunkPos[1]++; break;
+            case FACE_Y_MINUS: neighborChunkPos[1]--; break;
+            case FACE_Z_PLUS: neighborChunkPos[2]++; break;
+            case FACE_Z_MINUS: neighborChunkPos[2]--; break;
+          }
+          
+          const neighborKey = getChunkKey(neighborChunkPos);
+          
+          // Skip if already in our visible set
+          if (newlyVisibleChunks.has(neighborKey)) {
+            continue;
+          }
+          
+          const neighborInfo = allChunkInfos.get(neighborKey);
+          if (neighborInfo && Renderer.intersectFrustumAABB(frustumPlanes, neighborInfo.aabb)) {
+            stillVisibleChunks.push(neighborInfo);
+            newlyVisibleChunks.add(neighborKey);
+          }
+        }
+      }
+    }
+    
+    visibleChunks = stillVisibleChunks;
+    console.log(`Incremental cull took ${(performance.now() - incrementalStart).toFixed(2)}ms. Visible: ${visibleChunks.length}`);
+  } else {
+    // Full culling pass
+    visibleChunks = cullChunks(allChunkInfos, frustumPlanes, cameraPosition, enableAdvancedCulling);
+    console.log(`Full cull required. Cache valid: ${cacheValid}, cached chunks: ${cache.visibleChunks.size}`);
+  }
+
+  // Update cache
+  cache.visibleChunks.clear();
+  for (const chunk of visibleChunks) {
+    cache.visibleChunks.add(getChunkKey(chunk.position));
+  }
+  vec3.copy(cache.lastCameraPosition, cameraPosition);
+  cache.lastCameraRotation.pitch = cameraPitch;
+  cache.lastCameraRotation.yaw = cameraYaw;
+  cache.lastFrustumPlanes = frustumPlanes.map(p => vec4.clone(p));
+  cache.isValid = true;
+
+  const totalTime = performance.now() - startTime;
+  if (totalTime > 5) {
+    console.log(`cullChunksWithCache total: ${totalTime.toFixed(2)}ms`);
+  }
+
+  return visibleChunks;
+};
+
 const cullChunks = (
   allChunkInfos: Map<string, ChunkGeometryInfo>,
   frustumPlanes: Plane[],
@@ -268,6 +379,25 @@ export class Renderer {
   private canvasWidth = 0;
   private canvasHeight = 0;
   private aspect = 1.0; // Added aspect ratio state
+
+  // Temporal coherence cache for culling optimization
+  private cullCache: {
+    visibleChunks: Set<string>; // Set of chunk keys that were visible last frame
+    lastCameraPosition: vec3;
+    lastCameraRotation: { pitch: number; yaw: number };
+    lastFrustumPlanes: Plane[];
+    isValid: boolean;
+  } = {
+    visibleChunks: new Set(),
+    lastCameraPosition: vec3.create(),
+    lastCameraRotation: { pitch: 0, yaw: 0 },
+    lastFrustumPlanes: [],
+    isValid: false,
+  };
+
+  // Thresholds for cache invalidation
+  private static readonly POSITION_THRESHOLD = 0.5; // Half a block movement
+  private static readonly ROTATION_THRESHOLD = 0.02; // ~1.15 degrees in radians
 
   private constructor(
     device: GPUDevice,
@@ -535,6 +665,9 @@ export class Renderer {
       indirectDrawBuffer, // Pass indirect buffer
       INITIAL_INDIRECT_BUFFER_COMMANDS // Pass size tracking
     );
+
+    // Now that renderer exists, set it on the chunk manager
+    chunkManager.setRenderer(renderer);
 
     // Write initial UI matrix (identity) *after* Renderer creation
     renderer.device.queue.writeBuffer(renderer.uiUniformBuffer, 0, mat4.create() as Float32Array);
@@ -1030,11 +1163,14 @@ export class Renderer {
     extractPlanesDuration = performance.now() - extractPlanesStart;
 
     const cullChunksStart = performance.now();
-    const visibleChunks = cullChunks(
+    const visibleChunks = cullChunksWithCache(
       this.chunkManager.chunkGeometryInfo,
       frustumPlanes,
       cameraPosition,
-      enableAdvancedCulling
+      enableAdvancedCulling,
+      this.cullCache,
+      cameraPitch,
+      cameraYaw
     );
     cullChunksDuration = performance.now() - cullChunksStart;
 
@@ -1251,6 +1387,12 @@ export class Renderer {
     // Note: Projection matrix will be updated in the next renderFrame call using the new aspect ratio
 
     console.log(`Renderer resized to ${this.canvasWidth}x${this.canvasHeight}, aspect: ${this.aspect.toFixed(2)}`);
+  }
+
+  // Invalidate the culling cache (call when chunks are added/removed)
+  public invalidateCullCache(): void {
+    this.cullCache.isValid = false;
+    console.log("Culling cache invalidated");
   }
 
   // --- Getters for internal state if needed ---

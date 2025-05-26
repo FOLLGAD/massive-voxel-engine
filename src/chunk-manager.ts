@@ -126,15 +126,20 @@ export class ChunkManager {
   private freeSpaceVertex: FreeSpaceInfo[];
   private freeSpaceIndex: FreeSpaceInfo[];
 
+  // Optional renderer reference for cache invalidation
+  private renderer?: { invalidateCullCache(): void };
+
   constructor(
     device: GPUDevice,
     sharedVertexBuffer: GPUBuffer,
-    sharedIndexBuffer: GPUBuffer
+    sharedIndexBuffer: GPUBuffer,
+    renderer?: { invalidateCullCache(): void }
   ) {
     this.device = device;
     this.sharedVertexBuffer = sharedVertexBuffer;
     this.sharedIndexBuffer = sharedIndexBuffer;
     this.chunkGeometryInfo = new Map();
+    this.renderer = renderer;
 
     // Initialize used space maps
     this.usedSpaceVertex = new Map();
@@ -152,6 +157,11 @@ export class ChunkManager {
   getChunkGeometryInfo(position: vec3): ChunkGeometryInfo | undefined {
     const key = getChunkKey(position);
     return this.chunkGeometryInfo.get(key);
+  }
+
+  // Set the renderer reference for cache invalidation
+  setRenderer(renderer: { invalidateCullCache(): void }): void {
+    this.renderer = renderer;
   }
 
   addChunk(
@@ -353,11 +363,17 @@ export class ChunkManager {
     } else {
       console.error(`Chunk info for key ${key} missing after allocation!`);
     }
+
+    // Invalidate renderer culling cache
+    this.renderer?.invalidateCullCache();
   }
 
   deleteChunk(position: vec3) {
     this.freeChunkGeometryInfo(position);
     this.chunkGeometryInfo.delete(getChunkKey(position));
+    
+    // Invalidate renderer culling cache
+    this.renderer?.invalidateCullCache();
   }
 
   updateChunkGeometryInfo(
@@ -542,6 +558,9 @@ export class ChunkManager {
     existingChunkInfo.firstIndex = finalFirstIndex;
     existingChunkInfo.baseVertex = finalBaseVertex;
     existingChunkInfo.visibilityBits = visibilityBits;
+
+    // Invalidate renderer culling cache
+    this.renderer?.invalidateCullCache();
   }
 
   freeChunkGeometryInfo(position: vec3) {
