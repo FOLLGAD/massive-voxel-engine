@@ -4,6 +4,7 @@ import { drawDebugLines, generateDebugLineVertices } from "./renderer.debug";
 import { extractFrustumPlanes } from "./renderer.util";
 import type { AABB } from "./aabb";
 import { getChunkKey, getChunkOfPosition, getPairBitIndex } from "./chunk";
+import { HierarchicalOctree } from "./hierarchical-octree";
 
 // --- Constants ---
 const FRUSTUM_CULLING_EPSILON = 1e-5;
@@ -82,7 +83,9 @@ const cullChunksWithCache = (
     isValid: boolean;
   },
   cameraPitch: number,
-  cameraYaw: number
+  cameraYaw: number,
+  hierarchicalOctree?: HierarchicalOctree,
+  useHierarchicalCulling?: boolean
 ): ChunkGeometryInfo[] => {
   const startTime = performance.now();
 
@@ -156,8 +159,31 @@ const cullChunksWithCache = (
     visibleChunks = stillVisibleChunks;
     console.log(`Incremental cull took ${(performance.now() - incrementalStart).toFixed(2)}ms. Visible: ${visibleChunks.length}`);
   } else {
-    // Full culling pass
-    visibleChunks = cullChunks(allChunkInfos, frustumPlanes, cameraPosition, enableAdvancedCulling);
+    // Full culling pass - use hierarchical if available and enabled
+    if (useHierarchicalCulling && hierarchicalOctree) {
+      const hierarchicalStart = performance.now();
+      visibleChunks = hierarchicalOctree.cullChunksHierarchical(
+        frustumPlanes,
+        cameraPosition,
+        Renderer.intersectFrustumAABB
+      );
+      
+      // If advanced culling is also enabled, apply flood-fill on the hierarchical results
+      if (enableAdvancedCulling && visibleChunks.length > 0) {
+        // Convert to map for flood-fill
+        const hierarchicalResults = new Map<string, ChunkGeometryInfo>();
+        for (const chunk of visibleChunks) {
+          hierarchicalResults.set(getChunkKey(chunk.position), chunk);
+        }
+        
+        // Apply flood-fill culling on hierarchical results
+        visibleChunks = cullChunks(hierarchicalResults, frustumPlanes, cameraPosition, enableAdvancedCulling);
+      }
+      
+      console.log(`Hierarchical cull took ${(performance.now() - hierarchicalStart).toFixed(2)}ms. Visible: ${visibleChunks.length}`);
+    } else {
+      visibleChunks = cullChunks(allChunkInfos, frustumPlanes, cameraPosition, enableAdvancedCulling);
+    }
     console.log(`Full cull required. Cache valid: ${cacheValid}, cached chunks: ${cache.visibleChunks.size}`);
   }
 
@@ -395,6 +421,10 @@ export class Renderer {
     isValid: false,
   };
 
+  // Hierarchical octree for spatial culling
+  private hierarchicalOctree: HierarchicalOctree;
+  private useHierarchicalCulling = false; // Flag to enable/disable hierarchical culling
+
   // Thresholds for cache invalidation
   private static readonly POSITION_THRESHOLD = 0.5; // Half a block movement
   private static readonly ROTATION_THRESHOLD = 0.02; // ~1.15 degrees in radians
@@ -450,6 +480,9 @@ export class Renderer {
     this.sharedIndexBuffer = sharedIndexBuffer;
     this.indirectDrawBuffer = indirectDrawBuffer; // Assign indirect buffer
     this.indirectDrawBufferSizeCommands = indirectDrawBufferSizeCommands; // Assign size tracking
+
+    // Initialize hierarchical octree
+    this.hierarchicalOctree = new HierarchicalOctree();
 
     // Initialize aspect ratio
     this.canvasWidth = this.context.canvas.width;
@@ -1170,7 +1203,9 @@ export class Renderer {
       enableAdvancedCulling,
       this.cullCache,
       cameraPitch,
-      cameraYaw
+      cameraYaw,
+      this.hierarchicalOctree,
+      this.useHierarchicalCulling
     );
     cullChunksDuration = performance.now() - cullChunksStart;
 
@@ -1393,6 +1428,34 @@ export class Renderer {
   public invalidateCullCache(): void {
     this.cullCache.isValid = false;
     console.log("Culling cache invalidated");
+  }
+
+  // Add a chunk to the hierarchical octree
+  public addChunkToOctree(chunkInfo: ChunkGeometryInfo): void {
+    this.hierarchicalOctree.addChunk(chunkInfo);
+  }
+
+  // Remove a chunk from the hierarchical octree
+  public removeChunkFromOctree(chunkKey: string): void {
+    this.hierarchicalOctree.removeChunk(chunkKey);
+  }
+
+  // Enable or disable hierarchical culling
+  public setHierarchicalCulling(enabled: boolean): void {
+    this.useHierarchicalCulling = enabled;
+    this.invalidateCullCache(); // Force a full cull on next frame
+    console.log(`Hierarchical culling ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  // Get hierarchical octree statistics
+  public getOctreeStats(): ReturnType<HierarchicalOctree['getStats']> {
+    return this.hierarchicalOctree.getStats();
+  }
+
+  // Clear the hierarchical octree
+  public clearOctree(): void {
+    this.hierarchicalOctree.clear();
+    this.invalidateCullCache();
   }
 
   // --- Getters for internal state if needed ---

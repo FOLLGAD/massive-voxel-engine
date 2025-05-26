@@ -127,19 +127,26 @@ export class ChunkManager {
   private freeSpaceIndex: FreeSpaceInfo[];
 
   // Optional renderer reference for cache invalidation
-  private renderer?: { invalidateCullCache(): void };
+  private renderer?: { 
+    invalidateCullCache(): void; 
+    addChunkToOctree(chunkInfo: ChunkGeometryInfo): void;
+    removeChunkFromOctree(chunkKey: string): void;
+  };
 
   constructor(
     device: GPUDevice,
     sharedVertexBuffer: GPUBuffer,
     sharedIndexBuffer: GPUBuffer,
-    renderer?: { invalidateCullCache(): void }
+    renderer?: { 
+      invalidateCullCache(): void;
+      addChunkToOctree(chunkInfo: ChunkGeometryInfo): void;
+      removeChunkFromOctree(chunkKey: string): void;
+    }
   ) {
     this.device = device;
     this.sharedVertexBuffer = sharedVertexBuffer;
     this.sharedIndexBuffer = sharedIndexBuffer;
     this.chunkGeometryInfo = new Map();
-    this.renderer = renderer;
 
     // Initialize used space maps
     this.usedSpaceVertex = new Map();
@@ -152,6 +159,9 @@ export class ChunkManager {
     // Initialize free space lists
     this.freeSpaceVertex = [{ offset: 0, size: sharedVertexBuffer.size }];
     this.freeSpaceIndex = [{ offset: 0, size: sharedIndexBuffer.size }];
+
+    // Initialize renderer reference
+    this.renderer = renderer;
   }
 
   getChunkGeometryInfo(position: vec3): ChunkGeometryInfo | undefined {
@@ -159,8 +169,12 @@ export class ChunkManager {
     return this.chunkGeometryInfo.get(key);
   }
 
-  // Set the renderer reference for cache invalidation
-  setRenderer(renderer: { invalidateCullCache(): void }): void {
+  // Set the renderer reference for cache invalidation and octree management
+  setRenderer(renderer: { 
+    invalidateCullCache(): void;
+    addChunkToOctree(chunkInfo: ChunkGeometryInfo): void;
+    removeChunkFromOctree(chunkKey: string): void;
+  }): void {
     this.renderer = renderer;
   }
 
@@ -364,16 +378,15 @@ export class ChunkManager {
       console.error(`Chunk info for key ${key} missing after allocation!`);
     }
 
-    // Invalidate renderer culling cache
-    this.renderer?.invalidateCullCache();
+    // Notify renderer
+    if (this.renderer) {
+      this.renderer.addChunkToOctree(chunkGeometryInfo);
+    }
   }
 
   deleteChunk(position: vec3) {
     this.freeChunkGeometryInfo(position);
     this.chunkGeometryInfo.delete(getChunkKey(position));
-    
-    // Invalidate renderer culling cache
-    this.renderer?.invalidateCullCache();
   }
 
   updateChunkGeometryInfo(
@@ -559,8 +572,10 @@ export class ChunkManager {
     existingChunkInfo.baseVertex = finalBaseVertex;
     existingChunkInfo.visibilityBits = visibilityBits;
 
-    // Invalidate renderer culling cache
-    this.renderer?.invalidateCullCache();
+    // Notify renderer
+    if (this.renderer) {
+      this.renderer.addChunkToOctree(existingChunkInfo);
+    }
   }
 
   freeChunkGeometryInfo(position: vec3) {
@@ -601,6 +616,11 @@ export class ChunkManager {
       console.warn(
         `Could not find index block for key ${key} in usedSpaceIndex map during free.`
       );
+    }
+
+    // Notify renderer
+    if (this.renderer) {
+      this.renderer.removeChunkFromOctree(key);
     }
   }
 }

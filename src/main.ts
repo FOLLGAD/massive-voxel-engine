@@ -26,6 +26,7 @@ import { createAABB } from "./aabb";
 
 let debugMode = false;
 let enableAdvancedCulling = true;
+let enableHierarchicalCulling = false;
 log("Main", "Main script loaded.");
 
 const FACE_NORMALS = {
@@ -336,10 +337,14 @@ async function main() {
     if (keyboardState.pressedKeys.has("KeyT")) {
       enableAdvancedCulling = !enableAdvancedCulling;
     }
-    if (keyboardState.downKeys.has("KeyH")) {
+    if (keyboardState.pressedKeys.has("KeyB")) {
+      enableHierarchicalCulling = !enableHierarchicalCulling;
+      rendererState?.setHierarchicalCulling(enableHierarchicalCulling);
+    }
+    if (keyboardState.pressedKeys.has("KeyH")) {
       fov += 0.01;
     }
-    if (keyboardState.downKeys.has("KeyL")) {
+    if (keyboardState.pressedKeys.has("KeyL")) {
       fov -= 0.01;
     }
 
@@ -564,6 +569,7 @@ async function main() {
       vec3.normalize(lookDirection, lookDirection);
 
       const meshingMode = ENABLE_GREEDY_MESHING ? "Greedy" : "Naive";
+      const octreeStats = rendererState?.getOctreeStats();
       debugInfoElement.textContent = `
 Pos:    (${playerState.position[0].toFixed(
         1
@@ -585,6 +591,8 @@ Render: ${renderTimeMs.toFixed(2)} ms
 LookAt: ${lookAtTimeMs.toFixed(2)} ms
 Mesh:   ${meshingMode}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
+AdvCull:${enableAdvancedCulling ? 'ON' : 'OFF'} HierCull: ${enableHierarchicalCulling ? 'ON' : 'OFF'}
+Octree: ${octreeStats ? `Nodes: ${octreeStats.totalNodes}, Depth: ${octreeStats.maxDepth}` : 'N/A'}
         `.trim();
     }
     // console.timeEnd("debugInfoUpdate");
