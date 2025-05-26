@@ -321,10 +321,10 @@ export function updatePhysics(
   } else {
     velocity[1] = 0;
     if (keyboardState.downKeys.has("Space")) {
-      velocity[1] = JUMP_VELOCITY;
+      velocity[1] = FLYING_SPEED;
     }
     if (keyboardState.downKeys.has("ShiftLeft")) {
-      velocity[1] = -JUMP_VELOCITY;
+      velocity[1] = -FLYING_SPEED;
     }
   }
 

@@ -194,7 +194,7 @@ export class Terrain {
         // Normalize noise to be roughly between -1 and 1, then scale
         const normalizedNoise = totalNoise / maxAmplitude;
         const heightVariation = normalizedNoise * overallAmplitude;
-        const height = Math.floor(baseHeight + heightVariation);
+        const height = baseHeight + heightVariation;
         // --- End Height Calculation ---
 
         const chunkBaseY = chunk.position[1] * CHUNK_SIZE_Y;
@@ -206,8 +206,6 @@ export class Terrain {
           if (worldY > height) {
             if (Math.random() < 3e-6) {
               chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STAR);
-            } else {
-              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
             }
           } else if (worldY <= height && worldY > height - 3) {
             chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.GRASS);
@@ -221,7 +219,7 @@ export class Terrain {
           if (worldY <= height) {
             if (
               this.tunnelCaves(worldX, worldY, worldZ)
-              // || this.epicCaves(worldX, worldY, worldZ)
+              || this.epicCaves(worldX, worldY, worldZ)
             ) {
               chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
             }

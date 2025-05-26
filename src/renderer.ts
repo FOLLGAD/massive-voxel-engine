@@ -69,6 +69,91 @@ const getFaceFromDirection = (direction: number): number => {
 
 // --- Modified cullChunks Function ---
 
+// Constants for Wasm data layout
+const WASM_FLOATS_PER_CHUNK = 9; // pos(3), aabb.min(3), aabb.max(3)
+const WASM_INTS_PER_CHUNK = 8;   // visibilityBits(1), neighbors(6), originalJsIndex(1)
+const NO_NEIGHBOR_SENTINEL = -1;
+
+const cullChunksWasm = (
+  allChunkInfos: Map<string, ChunkGeometryInfo>,
+  frustumPlanes: Plane[], // Array of 6 vec4s
+  cameraPosition: vec3,
+): ChunkGeometryInfo[] => {
+  const startTime = performance.now();
+
+  const chunkInfoList = Array.from(allChunkInfos.values());
+  const numChunks = chunkInfoList.length;
+
+  if (numChunks === 0) {
+    return [];
+  }
+
+  // 1. Create a map from chunk key to its index in chunkInfoList
+  const keyToArrayIndexMap = new Map<string, number>();
+  chunkInfoList.forEach((info, index) => {
+    keyToArrayIndexMap.set(getChunkKey(info.position), index);
+  });
+
+  // 2. Prepare flat arrays for Wasm
+  const chunkFloatData = new Float32Array(numChunks * WASM_FLOATS_PER_CHUNK);
+  const chunkIntData = new Int32Array(numChunks * WASM_INTS_PER_CHUNK);
+
+  // 3. Populate the flat arrays
+  for (let i = 0; i < numChunks; i++) {
+    const chunkInfo = chunkInfoList[i];
+    const floatBaseIndex = i * WASM_FLOATS_PER_CHUNK;
+    const intBaseIndex = i * WASM_INTS_PER_CHUNK;
+
+    // Serialize float data
+    chunkFloatData.set(chunkInfo.position, floatBaseIndex);
+    chunkFloatData.set(chunkInfo.aabb.min, floatBaseIndex + 3);
+    chunkFloatData.set(chunkInfo.aabb.max, floatBaseIndex + 6);
+
+    // Serialize integer data
+    chunkIntData[intBaseIndex + 0] = chunkInfo.visibilityBits;
+    chunkIntData[intBaseIndex + 7] = i; // Store originalJsIndex
+
+    // Calculate and store neighbor indices
+    const currentChunkPos = chunkInfo.position;
+    const neighborIndicesOffset = intBaseIndex + 1; // Start of neighbor indices
+
+    for (let faceDir = 0; faceDir < NUM_FACES; faceDir++) {
+      const neighborChunkPos: vec3 = vec3.clone(currentChunkPos);
+      switch (faceDir) {
+        case FACE_X_PLUS: neighborChunkPos[0]++; break;
+        case FACE_X_MINUS: neighborChunkPos[0]--; break;
+        case FACE_Y_PLUS: neighborChunkPos[1]++; break;
+        case FACE_Y_MINUS: neighborChunkPos[1]--; break;
+        case FACE_Z_PLUS: neighborChunkPos[2]++; break;
+        case FACE_Z_MINUS: neighborChunkPos[2]--; break;
+      }
+      const neighborKey = getChunkKey(neighborChunkPos);
+      const neighborArrayIndex = keyToArrayIndexMap.get(neighborKey);
+
+      if (neighborArrayIndex !== undefined) {
+        chunkIntData[neighborIndicesOffset + faceDir] = neighborArrayIndex;
+      } else {
+        chunkIntData[neighborIndicesOffset + faceDir] = NO_NEIGHBOR_SENTINEL;
+      }
+    }
+  }
+
+  // 4. Prepare frustum planes and camera position for Wasm
+  const frustumPlanesData = new Float32Array(6 * 4); // 6 planes, 4 floats per plane
+  for (let i = 0; i < 6; i++) {
+    frustumPlanesData.set(frustumPlanes[i], i * 4);
+  }
+  const cameraPositionData = new Float32Array(cameraPosition);
+
+  // 5. Map visible original indices back to ChunkGeometryInfo objects
+  const visibleChunks: ChunkGeometryInfo[] = chunkInfoList;
+
+  const endTime = performance.now();
+  console.log(`cullChunksWasm (JS prep + Wasm placeholder) took ${(endTime - startTime).toFixed(2)}ms. Found ${visibleChunks.length} visible chunks.`);
+
+  return visibleChunks;
+};
+
 const cullChunks = (
   allChunkInfos: Map<string, ChunkGeometryInfo>,
   frustumPlanes: Plane[],
@@ -87,6 +172,7 @@ const cullChunks = (
     });
     return result;
   }
+  
   const startChunkPos = getChunkOfPosition(cameraPosition);
   const startChunkKey = getChunkKey(startChunkPos);
   const startChunkInfo = allChunkInfos.get(startChunkKey);
@@ -101,12 +187,12 @@ const cullChunks = (
     return [];
   }
 
-  const visibleChunks = new Map<string, ChunkGeometryInfo>(); // Stores potentially visible chunks
+  const visibleChunks: ChunkGeometryInfo[] = []; // Stores potentially visible chunks
   const queue: [ChunkGeometryInfo, number][] = []; // [chunkInfo, entryFaceIndex]
   const visitedKeys = new Set<string>(); // Track keys added to queue to prevent cycles/redundancy
 
   // Add starting chunk (it passed the frustum check)
-  visibleChunks.set(startChunkKey, startChunkInfo);
+  visibleChunks.push(startChunkInfo);
   queue.push([startChunkInfo, -1]); // -1 indicates no entry face
   visitedKeys.add(startChunkKey);
 
@@ -184,7 +270,7 @@ const cullChunks = (
         // If we got here, the chunk is considered visible (passed occlusion and potentially frustum)
         const neighborEntryFace = getOppositeFace(exitFace);
         queue.push([neighborChunkInfo, neighborEntryFace]);
-        visibleChunks.set(neighborChunkKey, neighborChunkInfo);
+        visibleChunks.push(neighborChunkInfo);
 
         // Add to visited here if doing post-check
         if (postFrustumCheck) {
@@ -194,34 +280,9 @@ const cullChunks = (
     }
   }
 
-  let finalVisibleChunks = Array.from(visibleChunks.values());
+  console.log("total frustum intersection time", totalIntersectionTime);
 
-  if (postFrustumCheck) {
-    finalVisibleChunks = finalVisibleChunks.filter(chunkInfo => {
-      const intersectStart = performance.now();
-      const intersects = Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb);
-      totalIntersectionTime += performance.now() - intersectStart;
-      return intersects;
-    });
-  }
-
-
-  // Log only if start chunk existed
-  if (startChunkInfo) {
-    if (finalVisibleChunks.length === 0) {
-      console.log(
-        "No visible chunks found after culling",
-        startChunkPos,
-        cameraPosition,
-        // frustumPlanes,
-        // startChunkInfo,
-        // startChunkKey,
-        // startChunkInfo.position,
-      )
-    }
-  }
-
-  return finalVisibleChunks;
+  return visibleChunks;
 };
 
 
@@ -874,22 +935,6 @@ export class Renderer {
       }
       return vec3.fromValues(worldVec4[0], worldVec4[1], worldVec4[2]);
     });
-  }
-
-  // --- Drawing Methods ---
-
-  private drawVoxelScene(
-    passEncoder: GPURenderPassEncoder,
-    visibleChunkCount: number
-  ): { drawnChunks: number; totalTriangles: number } {
-    // const startTime = performance.now();
-    // Check if there's anything to draw
-    if (visibleChunkCount === 0) {
-      return { drawnChunks: 0, totalTriangles: 0 };
-    }
-    // We can no longer easily sum triangle counts here without reading back data.
-    // Return the number of chunks drawn (which is simply the visible count).
-    return { drawnChunks: visibleChunkCount, totalTriangles: 0 };
   }
 
   // --- Render Frame ---
