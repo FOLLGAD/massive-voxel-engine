@@ -39,9 +39,13 @@ export class ChunkStorage {
 
             // Add timeout to prevent hanging
             const timeout = setTimeout(() => {
-                log.error("ChunkStorage", "IndexedDB initialization timed out after 10 seconds");
-                reject(new Error("IndexedDB initialization timed out after 10 seconds"));
-            }, 10000);
+                log.error("ChunkStorage", "IndexedDB initialization timed out after 10 seconds - continuing without storage");
+                // Don't reject, just continue without storage
+                this.isInitialized = true;
+                this.db = null;
+                clearTimeout(timeout);
+                resolve();
+            }, 5000); // Reduced timeout
 
             const attemptInit = () => {
                 log("ChunkStorage", `Opening IndexedDB: ${this.dbName} v${this.version}`);

@@ -9,6 +9,8 @@ import {
   CHUNK_SIZE_Z,
   UNLOAD_BUFFER_XZ,
   UNLOAD_BUFFER_Y,
+  PHYSICS_CACHE_RADIUS_XZ,
+  PHYSICS_CACHE_RADIUS_Y,
 } from "./config";
 import { PlayerState, updatePhysics } from "./physics"; // Import physics
 import { Renderer } from "./renderer"; // Import renderer
@@ -23,8 +25,6 @@ import { KeyboardState } from "./keyboard";
 import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
-import { HybridChunkManager } from "./hybrid-chunk-manager";
-
 let debugMode = false;
 log("Main", "Main script loaded.");
 
@@ -38,8 +38,8 @@ const FACE_NORMALS = {
 };
 
 // --- Global State ---
-const chunkManager = new HybridChunkManager(500); // Cache 2000 chunks in RAM for better physics coverage
 const requestedChunkKeys = new Set<string>();
+const chunkDataCache = new Map<string, Uint8Array>(); // Simple cache for chunk data needed by physics
 const playerState = new PlayerState();
 let rendererState: Renderer; // Will be initialized later
 let chunksReceived = 0; // Counter for received chunks
@@ -129,13 +129,50 @@ async function main() {
 
   const workerManager = new WorkerManager(numWorkers);
 
-  // Initialize hybrid chunk manager with worker manager
-  log("Main", "Initializing hybrid chunk manager...");
-  chunkManager.setWorkerManager(workerManager);
-  await chunkManager.initialize();
-  log("Main", "Hybrid chunk manager initialized");
+  // Workers now handle their own storage, no need for hybrid chunk manager
+  log("Main", "Workers will handle their own storage");
 
   let blockToPlace: VoxelType = VoxelType.STONE;
+
+    // Function to request chunk data from workers when needed for physics
+  const requestChunkData = (position: vec3): Promise<Uint8Array | null> => {
+    return new Promise((resolve, reject) => {
+      const key = getChunkKey(position);
+      
+      // Check cache first
+      if (chunkDataCache.has(key)) {
+        resolve(chunkDataCache.get(key)!);
+        return;
+      }
+      
+      // Set up one-time listener for the response
+      const responseHandler = (event: MessageEvent) => {
+        if (event.data.type === "chunkDataAvailable" && getChunkKey(event.data.position) === key) {
+          const voxelData = event.data.voxels as Uint8Array;
+          chunkDataCache.set(key, voxelData);
+          resolve(voxelData);
+          workerManager.removeMessageHandler(responseHandler);
+        } else if (event.data.type === "chunkDataNotFound" && getChunkKey(event.data.position) === key) {
+          resolve(null);
+          workerManager.removeMessageHandler(responseHandler);
+        }
+      };
+      
+      workerManager.addMessageHandler(responseHandler);
+      
+      // Request chunk data from worker
+      workerManager.queueTask({
+        type: "requestChunkData",
+        position,
+      });
+      
+      // Add timeout
+      setTimeout(() => {
+        workerManager.removeMessageHandler(responseHandler);
+        reject(new Error(`Timeout requesting chunk data for ${key}`));
+      }, 5000);
+    });
+  };
 
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
@@ -143,39 +180,34 @@ async function main() {
     log("Worker", `Received message type: ${type}`);
 
     if (type === "chunkDataAvailable") {
+      // Handle chunk data responses for physics (cache them)
       const { position, voxels } = event.data;
       const key = getChunkKey(position);
+      const voxelData = voxels as Uint8Array;
+      chunkDataCache.set(key, voxelData);
       chunksReceived++;
-      log("Main", `Received chunk data for ${key}`);
-              // 'voxels' is now a Uint8Array from the worker
-        const voxelData = voxels as Uint8Array; // Type assertion for clarity
-        // Save to hybrid chunk manager (both cache and storage)
-        chunkManager.setChunk(position, voxelData);
+      
+      // Mark chunk as requested (it's now available)
       requestedChunkKeys.add(key);
-      log("Main", `Chunk ${key} saved to manager, total requested: ${requestedChunkKeys.size}`);
+      log("Debug", `Cached chunk data for ${key}, total received: ${chunksReceived}`);
     } else if (type === "chunkMeshUpdated") {
       if (!rendererState) throw new Error("Renderer not found");
 
-      const {
-        position,
-        vertices: verticesBuffer,
-        indices: indicesBuffer,
-        visibilityBits,
-        modifiedChunkData,
-      } = event.data as {
-        position: vec3;
-        vertices: Float32Array;
-        indices: Uint32Array;
-        visibilityBits: number;
-        modifiedChunkData?: Uint8Array;
-      };
-      const vertices = new Float32Array(verticesBuffer);
-      const indices = new Uint32Array(indicesBuffer);
+              const {
+          position,
+          vertices: verticesBuffer,
+          indices: indicesBuffer,
+          visibilityBits,
+        } = event.data as {
+          position: vec3;
+          vertices: Float32Array;
+          indices: Uint32Array;
+          visibilityBits: number;
+        };
+        const vertices = new Float32Array(verticesBuffer);
+        const indices = new Uint32Array(indicesBuffer);
 
-      // Save modified chunk data if provided (from renderChunk operations)
-      if (modifiedChunkData) {
-        chunkManager.setChunk(position, modifiedChunkData);
-      }
+        // Workers now handle their own storage, no need to save chunk data here
 
       const minX = position[0] * CHUNK_SIZE_X;
       const minY = position[1] * CHUNK_SIZE_Y;
@@ -198,7 +230,7 @@ async function main() {
           aabb,
           visibilityBits
         );
-        log("Main", `Updated chunk geometry for ${getChunkKey(position)}, vertices: ${vertices.length}, indices: ${indices.length}`);
+        log("Debug", `Updated chunk geometry for ${getChunkKey(position)}, vertices: ${vertices.length}, indices: ${indices.length}`);
       } catch (error) {
         const key = getChunkKey(position);
         log.error("Main", `Error processing mesh update for ${key}:`, error);
@@ -211,6 +243,19 @@ async function main() {
         chunksToUnloadQueue.push(...chunks);
         log("Main", `Queued ${chunks.length} chunks for unloading (${chunksToUnloadQueue.length} total in queue)`);
       }
+    } else if (type === "chunkDataNotFound") {
+      const { position } = event.data;
+      const key = getChunkKey(position);
+      log("Main", `Chunk data not found for ${key}`);
+      // This is handled by the requestChunkData promise rejection
+    } else if (type === "storageStats") {
+      const { stats } = event.data;
+      log("Main", "Worker Storage Stats:", stats);
+    } else if (type === "flushComplete") {
+      log("Main", "Worker completed flushing pending saves to storage");
+    } else if (type === "storageStatus") {
+      const { status } = event.data;
+      log("Main", "Worker Storage Status:", status);
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
@@ -258,14 +303,14 @@ async function main() {
 
       // Check if chunk is loaded (only from cache for performance)
       const key = getChunkKey(blockChunk);
-      const cached = chunkManager.cache?.get(key);
+      const cached = chunkDataCache.get(key);
       if (!cached) continue;
 
       // Get local coordinates within chunk
       const localPosition = getLocalPosition(block);
 
       // Get voxel index
-      const chunk = new Chunk(blockChunk, cached.data);
+      const chunk = new Chunk(blockChunk, cached);
 
       // Check if block exists (non-zero)
       if (chunk.getVoxel(localPosition) !== VoxelType.AIR) {
@@ -352,7 +397,8 @@ async function main() {
       keyboardState,
       cameraYaw,
       deltaTimeMs,
-      chunkManager
+      chunkDataCache,
+      requestChunkData
     );
 
     if (keyboardState.pressedKeys.has("KeyC")) {
@@ -362,9 +408,25 @@ async function main() {
       debugMode = !debugMode;
     }
     if (keyboardState.pressedKeys.has("KeyB")) {
-      // Show chunk storage stats
-      const stats = await chunkManager.getStats();
-      log("Main", "Chunk Storage Stats:", stats);
+      // Show chunk storage stats from workers
+      workerManager.queueTask({
+        type: "getStorageStats",
+      });
+      log("Main", "Requested storage stats from workers");
+    }
+    if (keyboardState.pressedKeys.has("KeyF")) {
+      // Manually flush pending saves to storage
+      workerManager.queueTask({
+        type: "flushPendingSaves",
+      });
+      log("Main", "Requested manual flush of pending saves from workers");
+    }
+    if (keyboardState.pressedKeys.has("KeyG")) {
+      // Check storage status for debugging
+      workerManager.queueTask({
+        type: "getStorageStatus",
+      });
+      log("Main", "Requested storage status from workers");
     }
     if (keyboardState.downKeys.has("KeyH")) {
       fov += 0.01;
@@ -391,12 +453,15 @@ async function main() {
       const { block } = blockLookedAt;
       // Handle block removal asynchronously to avoid blocking the game loop
       (async () => {
-        const chunkData = await chunkManager.getChunk(getChunkOfPosition(block));
+        const chunkPosition = getChunkOfPosition(block);
+        const chunkData = await requestChunkData(chunkPosition);
         if (!chunkData) return;
-        const chunk = new Chunk(getChunkOfPosition(block), chunkData);
+        const chunk = new Chunk(chunkPosition, chunkData);
         const localPosition = getLocalPosition(block);
         chunk.setVoxel(localPosition, VoxelType.AIR);
-        chunkManager.setChunk(chunk.position, chunk.data);
+        
+        // Update cache
+        chunkDataCache.set(getChunkKey(chunkPosition), chunk.data);
 
         workerManager.queueTask(
           {
@@ -414,12 +479,15 @@ async function main() {
       vec3.add(newBlock, block, FACE_NORMALS[face]);
       // Handle block placement asynchronously to avoid blocking the game loop
       (async () => {
+        const chunkPosition = getChunkOfPosition(newBlock);
         const localPosition = getLocalPosition(newBlock);
-        const chunkData = await chunkManager.getChunk(getChunkOfPosition(newBlock));
+        const chunkData = await requestChunkData(chunkPosition);
         if (!chunkData) return;
-        const chunk = new Chunk(getChunkOfPosition(newBlock), chunkData);
+        const chunk = new Chunk(chunkPosition, chunkData);
         chunk.setVoxel(localPosition, blockToPlace);
-        chunkManager.setChunk(chunk.position, chunk.data);
+        
+        // Update cache
+        chunkDataCache.set(getChunkKey(chunkPosition), chunk.data);
 
         workerManager.queueTask(
           {
@@ -441,6 +509,10 @@ async function main() {
   let chunksToUnloadQueue: string[] = [];
   let lastUnloadCheck = 0;
   
+  // Three-tier unloading system:
+  // 1. Storage: Never deleted (permanent)
+  // 2. Mesh rendering: Deleted at LOAD_RADIUS + UNLOAD_BUFFER (for performance)
+  // 3. Physics cache: Deleted at PHYSICS_CACHE_RADIUS (for memory management)
   const unloadChunks = () => {
     const now = performance.now();
     
@@ -487,20 +559,57 @@ async function main() {
     for (const key of chunksThisFrame) {
       const chunkInfo = rendererState.chunkManager.chunkGeometryInfo.get(key);
       if (chunkInfo) {
+        // Always clean up renderer resources (meshes) when outside unload radius
+        // NOTE: This only deletes mesh/geometry data from GPU, NOT from storage
         rendererState.chunkManager.deleteChunk(chunkInfo.position);
-        // Note: We don't delete from chunkManager here as it handles its own cache
-        // The chunk data will be automatically evicted from cache when needed
+        
+        // Remove from requested chunks
         requestedChunkKeys.delete(key);
+        
+        log("Debug", `Unloaded chunk mesh ${key} from renderer`);
       }
+    }
+    
+    if (chunksThisFrame.length > 0) {
+      log("Main", `Processed ${chunksThisFrame.length} chunk meshes for unloading`);
     }
     
     requestAnimationFrame(processUnloadQueue);
   };
 
+  // Separate function to clean up physics cache (more aggressive, smaller radius)
+  const cleanupPhysicsCache = () => {
+    const playerChunk = getChunkOfPosition(playerState.position);
+    const chunksToRemove: string[] = [];
+    
+    // Check each cached chunk to see if it's outside physics radius
+    for (const [key, _] of chunkDataCache) {
+      const [x, y, z] = key.split(',').map(Number);
+      const dx = Math.abs(x - playerChunk[0]);
+      const dy = Math.abs(y - playerChunk[1]);
+      const dz = Math.abs(z - playerChunk[2]);
+      
+      // Remove if outside physics cache radius
+      if (dx > PHYSICS_CACHE_RADIUS_XZ || dy > PHYSICS_CACHE_RADIUS_Y || dz > PHYSICS_CACHE_RADIUS_XZ) {
+        chunksToRemove.push(key);
+      }
+    }
+    
+    // Remove chunks outside physics radius
+    for (const key of chunksToRemove) {
+      chunkDataCache.delete(key);
+    }
+    
+    if (chunksToRemove.length > 0) {
+      log("Main", `Cleaned up ${chunksToRemove.length} chunks from physics cache, cache size: ${chunkDataCache.size}`);
+    }
+  };
+
   let lastHandledChunkPosition: vec3 | null = null;
   const fn = () => {
-    if (!lastHandledChunkPosition || !vec3.equals(lastHandledChunkPosition, playerState.position)) {
-      lastHandledChunkPosition = vec3.clone(playerState.position);
+    const currentChunk = getChunkOfPosition(playerState.position);
+    if (!lastHandledChunkPosition || !vec3.equals(lastHandledChunkPosition, currentChunk)) {
+      lastHandledChunkPosition = vec3.clone(currentChunk);
 
       const playerChunk = getChunkOfPosition(playerState.position);
       log("Main", `Player at position ${playerState.position[0]},${playerState.position[1]},${playerState.position[2]} -> chunk ${playerChunk[0]},${playerChunk[1]},${playerChunk[2]}`);
@@ -540,15 +649,48 @@ async function main() {
     }
 
     setTimeout(
-      () => requestIdleCallback(fn, { timeout: 1000 }),
-      1000
+      () => requestIdleCallback(fn, { timeout: 500 }),
+      100 // Check more frequently
     );
   };
 
+  // Start chunk loading immediately
   fn();
+  
+  // Also request chunks around spawn immediately
+  const spawnChunk = getChunkOfPosition(playerState.position);
+  let initialChunksRequested = 0;
+  for (let yOffset = -2; yOffset <= 2; yOffset++) {
+    for (let zOffset = -4; zOffset <= 4; zOffset++) {
+      for (let xOffset = -4; xOffset <= 4; xOffset++) {
+        const chunkPos = vec3.fromValues(
+          spawnChunk[0] + xOffset,
+          spawnChunk[1] + yOffset,
+          spawnChunk[2] + zOffset
+        );
+        const key = getChunkKey(chunkPos);
+        if (!requestedChunkKeys.has(key)) {
+          requestedChunkKeys.add(key);
+          initialChunksRequested++;
+          workerManager.queueTask({
+            type: "requestChunk",
+            position: chunkPos,
+          });
+        }
+      }
+    }
+  }
+  log("Main", `Requested ${initialChunksRequested} initial chunks around spawn`);
 
   unloadChunks();
   processUnloadQueue(); // Start the queue processor
+  
+  // Start physics cache cleanup (more frequent, smaller radius)
+  const startPhysicsCacheCleanup = () => {
+    cleanupPhysicsCache();
+    setTimeout(startPhysicsCacheCleanup, 2000); // Every 2 seconds
+  };
+  startPhysicsCacheCleanup();
 
   let debugCameraEnabled = false;
   let fov = Math.PI / 4;
@@ -630,6 +772,19 @@ async function main() {
       vec3.normalize(lookDirection, lookDirection);
 
       const meshingMode = ENABLE_GREEDY_MESHING ? "Greedy" : "Naive";
+      
+      // Memory usage information
+      const getMemoryInfo = () => {
+        if ('memory' in performance) {
+          const memory = (performance as any).memory;
+          const usedJSHeapSize = memory.usedJSHeapSize / 1024 / 1024;
+          const totalJSHeapSize = memory.totalJSHeapSize / 1024 / 1024;
+          const jsHeapSizeLimit = memory.jsHeapSizeLimit / 1024 / 1024;
+          return `${usedJSHeapSize.toFixed(1)}MB / ${totalJSHeapSize.toFixed(1)}MB (${jsHeapSizeLimit.toFixed(0)}MB limit)`;
+        }
+        return "N/A";
+      };
+
       debugInfoElement.textContent = `
 Pos:    (${playerState.position[0].toFixed(
         1
@@ -641,7 +796,7 @@ Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(
         2
       )}, ${lookDirection[2].toFixed(2)})
 Chunks: ${rendererState.chunkManager.chunkGeometryInfo.size} (${requestedChunkKeys.size
-        } req)
+        } req, ${chunkDataCache.size} cached)
 Drawn:  ${rendererState.debugInfo.drawnChunks}
 Culled: ${rendererState.debugInfo.culledChunks}
 Tris:   ${lastTotalTriangles.toLocaleString()}
@@ -650,6 +805,7 @@ Physics:${physicsTimeMs.toFixed(2)} ms
 Render: ${renderTimeMs.toFixed(2)} ms
 LookAt: ${lookAtTimeMs.toFixed(2)} ms
 Mesh:   ${meshingMode}
+RAM:    ${getMemoryInfo()}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
         `.trim();
     }
@@ -715,6 +871,42 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
 
   window.addEventListener("resize", () => {
     rendererState?.resize(window.innerWidth, window.innerHeight);
+  });
+
+  // Flush all pending saves before page unload
+  window.addEventListener("beforeunload", async (e) => {
+    log("Main", "Page unloading - flushing all pending saves to storage");
+    
+    // Flush pending saves in all workers
+    const flushPromises: Promise<void>[] = [];
+    for (let i = 0; i < numWorkers; i++) {
+      const promise = new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          log.warn("Main", `Worker ${i} flush timeout`);
+          resolve();
+        }, 3000); // 3 second timeout
+        
+        const handler = (event: MessageEvent) => {
+          if (event.data.type === "flushComplete") {
+            workerManager.removeMessageHandler(handler);
+            clearTimeout(timeout);
+            resolve();
+          }
+        };
+        
+        workerManager.addMessageHandler(handler);
+        workerManager.queueTask({ type: "flushPendingSaves" });
+      });
+      flushPromises.push(promise);
+    }
+    
+    // Wait for all workers to flush (with timeout)
+    try {
+      await Promise.all(flushPromises);
+      log("Main", "All workers flushed pending saves");
+    } catch (error) {
+      log.error("Main", "Error flushing pending saves:", error);
+    }
   });
 }
 

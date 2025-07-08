@@ -229,9 +229,20 @@ export class Terrain {
         }
       }
     }
+    // Count solid blocks for debugging
+    let solidBlocks = 0;
+    let airBlocks = 0;
+    for (let i = 0; i < chunk.data.length; i++) {
+      if (chunk.data[i] !== VoxelType.AIR) {
+        solidBlocks++;
+      } else {
+        airBlocks++;
+      }
+    }
+    
     log(
       "Terrain",
-      `Perlin terrain generation complete for chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]}`
+      `Terrain generation complete for chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]} - ${solidBlocks} solid, ${airBlocks} air blocks`
     );
 
     return chunk;

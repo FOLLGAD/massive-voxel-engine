@@ -2,6 +2,7 @@ export class WorkerManager {
   private workers: Worker[];
   private instantWorkers: Worker[] = [];
   private onMessageHandler: ((event: MessageEvent) => void) | undefined;
+  private messageHandlers: ((event: MessageEvent) => void)[] = [];
   private workerJobs: Map<Worker, number> = new Map();
 
   constructor(numWorkers: number = navigator.hardwareConcurrency || 4) {
@@ -78,7 +79,11 @@ export class WorkerManager {
   }
 
   private _onMessageHandler(event: MessageEvent) {
+    // Call primary handler
     this.onMessageHandler?.(event);
+    
+    // Call all additional handlers
+    this.messageHandlers.forEach(handler => handler(event));
 
     // Decrement job count only when mesh is updated (final step of chunk processing)
     if (event.data.type === "chunkMeshUpdated") {
@@ -92,6 +97,17 @@ export class WorkerManager {
 
   async setMessageHandler(fn: (event: MessageEvent) => void) {
     this.onMessageHandler = fn;
+  }
+
+  addMessageHandler(fn: (event: MessageEvent) => void) {
+    this.messageHandlers.push(fn);
+  }
+
+  removeMessageHandler(fn: (event: MessageEvent) => void) {
+    const index = this.messageHandlers.indexOf(fn);
+    if (index > -1) {
+      this.messageHandlers.splice(index, 1);
+    }
   }
 
   getAvailableWorker(): Worker | null {

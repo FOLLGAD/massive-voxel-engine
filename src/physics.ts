@@ -82,19 +82,19 @@ function isSolidVoxel(voxelType: VoxelType): boolean {
   return voxelType !== VoxelType.AIR;
 }
 
-// Get voxel type at world coordinates (Needs access to chunkManager)
+// Get voxel type at world coordinates (Uses chunk data cache)
 function getVoxelAt(
   position: vec3,
-  chunkManager: any
+  chunkDataCache: Map<string, Uint8Array>
 ): VoxelType {
   const chunkPosition = getChunkOfPosition(position);
 
   // Try to get from cache first (synchronous)
   const key = getChunkKey(chunkPosition);
-  const cached = chunkManager.cache?.get(key);
+  const cached = chunkDataCache.get(key);
   
   if (cached) {
-    const chunk = new Chunk(chunkPosition, cached.data);
+    const chunk = new Chunk(chunkPosition, cached);
     const localPos = vec3.fromValues(
       Math.floor(position[0]) - chunk.position[0] * CHUNK_SIZE_X,
       Math.floor(position[1]) - chunk.position[1] * CHUNK_SIZE_Y,
@@ -114,7 +114,7 @@ function getVoxelAt(
  */
 function getPotentialVoxelCollisions(
   aabb: AABB,
-  chunkManager: any
+  chunkDataCache: Map<string, Uint8Array>
 ): AABB[] {
   const collisions: AABB[] = [];
   const minX = Math.floor(aabb.min[0]);
@@ -129,7 +129,7 @@ function getPotentialVoxelCollisions(
       for (let x = minX; x < maxX; x++) {
         const voxelType = getVoxelAt(
           vec3.fromValues(x + 0.5, y + 0.5, z + 0.5),
-          chunkManager
+          chunkDataCache
         ); // Check center of voxel
         if (isSolidVoxel(voxelType)) {
           const voxelAABB = getVoxelAABB(x, y, z);
@@ -288,7 +288,7 @@ function resolveCollisionsAxis(
  */
 function checkCriticalChunksLoaded(
   aabb: AABB,
-  chunkManager: any
+  chunkDataCache: Map<string, Uint8Array>
 ): boolean {
   const minChunkX = Math.floor(aabb.min[0] / CHUNK_SIZE_X);
   const maxChunkX = Math.floor(aabb.max[0] / CHUNK_SIZE_X);
@@ -305,7 +305,7 @@ function checkCriticalChunksLoaded(
         const chunkPos = vec3.fromValues(x, y, z);
         const key = getChunkKey(chunkPos);
         
-        if (!chunkManager.cache?.has(key)) {
+        if (!chunkDataCache.has(key)) {
           missingChunks.push(key);
         }
       }
@@ -327,11 +327,12 @@ function checkCriticalChunksLoaded(
 
 /**
  * Requests chunks needed for physics calculations around the player
- * This uses the main chunk loading system instead of trying to preload separately
+ * This uses the new worker-based chunk data system
  */
 function requestPhysicsChunks(
   playerPosition: vec3,
-  chunkManager: any
+  chunkDataCache: Map<string, Uint8Array>,
+  requestChunkData: (position: vec3) => Promise<Uint8Array | null>
 ): void {
   // Calculate the area around the player that needs to be loaded for physics
   const playerAABB = getPlayerAABB(playerPosition);
@@ -345,21 +346,21 @@ function requestPhysicsChunks(
   const minChunkZ = Math.floor(expandedAABB.min[2] / CHUNK_SIZE_Z);
   const maxChunkZ = Math.floor(expandedAABB.max[2] / CHUNK_SIZE_Z);
   
-  // Request chunks through the main system if worker manager is available
-  if (chunkManager.workerManager) {
-    for (let y = minChunkY; y <= maxChunkY; y++) {
-      for (let z = minChunkZ; z <= maxChunkZ; z++) {
-        for (let x = minChunkX; x <= maxChunkX; x++) {
-          const chunkPos = vec3.fromValues(x, y, z);
-          const key = getChunkKey(chunkPos);
-          
-          // Only request if not already in cache
-          if (!chunkManager.cache?.has(key)) {
-            chunkManager.workerManager.queueTask({
-              type: "requestChunk",
-              position: chunkPos,
-            });
-          }
+  // Request chunks that are not already in cache
+  for (let y = minChunkY; y <= maxChunkY; y++) {
+    for (let z = minChunkZ; z <= maxChunkZ; z++) {
+      for (let x = minChunkX; x <= maxChunkX; x++) {
+        const chunkPos = vec3.fromValues(x, y, z);
+        const key = getChunkKey(chunkPos);
+        
+        // Only request if not already in cache
+        if (!chunkDataCache.has(key)) {
+          requestChunkData(chunkPos).catch(error => {
+            // Silently handle errors to avoid spamming console
+            if (Math.random() < 0.01) { // 1% chance to log
+              log("Physics", `Failed to request chunk data for ${key}:`, error);
+            }
+          });
         }
       }
     }
@@ -372,7 +373,8 @@ export function updatePhysics(
   keyboardState: KeyboardState,
   cameraYaw: number, // Needed for movement direction
   deltaTimeMs: number,
-  chunkManager: any // Pass chunk manager
+  chunkDataCache: Map<string, Uint8Array>, // Pass chunk data cache
+  requestChunkData: (position: vec3) => Promise<Uint8Array | null> // Function to request chunk data
 ): PlayerState {
   const { position, velocity } = playerState;
 
@@ -380,13 +382,13 @@ export function updatePhysics(
     playerState.isFlying = !playerState.isFlying;
   }
 
-  // Request chunks needed for physics (this triggers the main chunk loading system)
-  requestPhysicsChunks(position, chunkManager);
+  // Request chunks needed for physics (this triggers the worker-based chunk data system)
+  requestPhysicsChunks(position, chunkDataCache, requestChunkData);
   
   // Check if critical chunks for physics are loaded (only immediate area)
   const playerAABB = getPlayerAABB(position);
   const expandedAABB = expandAABB(playerAABB, 0.5, 0.5, 0.5); // Smaller area
-  const criticalChunksLoaded = checkCriticalChunksLoaded(expandedAABB, chunkManager);
+  const criticalChunksLoaded = checkCriticalChunksLoaded(expandedAABB, chunkDataCache);
   
   // If critical chunks aren't loaded, allow basic physics but limit movement
   if (!criticalChunksLoaded) {
@@ -439,7 +441,7 @@ export function updatePhysics(
   const sweptAABB = expandAABB(currentAABB, dx, dy, dz);
   const potentialCollisions = getPotentialVoxelCollisions(
     sweptAABB,
-    chunkManager
+    chunkDataCache
   );
 
   // 5.2 Resolve Y-axis
