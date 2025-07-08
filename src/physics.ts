@@ -104,7 +104,8 @@ function getVoxelAt(
   }
 
   // If not in cache, treat as air for physics (will be loaded asynchronously)
-  return 0; // Treat unloaded chunks as Air for safety
+  // This is safe because we preload chunks before physics calculations
+  return VoxelType.AIR; // Treat unloaded chunks as Air for safety
 }
 
 /**
@@ -282,6 +283,89 @@ function resolveCollisionsAxis(
   return maxDisplacement;
 }
 
+/**
+ * Checks if all critical chunks for physics calculations are loaded in cache
+ */
+function checkCriticalChunksLoaded(
+  aabb: AABB,
+  chunkManager: any
+): boolean {
+  const minChunkX = Math.floor(aabb.min[0] / CHUNK_SIZE_X);
+  const maxChunkX = Math.floor(aabb.max[0] / CHUNK_SIZE_X);
+  const minChunkY = Math.floor(aabb.min[1] / CHUNK_SIZE_Y);
+  const maxChunkY = Math.floor(aabb.max[1] / CHUNK_SIZE_Y);
+  const minChunkZ = Math.floor(aabb.min[2] / CHUNK_SIZE_Z);
+  const maxChunkZ = Math.floor(aabb.max[2] / CHUNK_SIZE_Z);
+  
+  const missingChunks: string[] = [];
+  
+  for (let y = minChunkY; y <= maxChunkY; y++) {
+    for (let z = minChunkZ; z <= maxChunkZ; z++) {
+      for (let x = minChunkX; x <= maxChunkX; x++) {
+        const chunkPos = vec3.fromValues(x, y, z);
+        const key = getChunkKey(chunkPos);
+        
+        if (!chunkManager.cache?.has(key)) {
+          missingChunks.push(key);
+        }
+      }
+    }
+  }
+  
+  if (missingChunks.length > 0) {
+    // Only log occasionally to avoid spam
+    if (Math.random() < 0.01) { // 1% chance to log
+      log("Physics", `Missing ${missingChunks.length} critical chunks`);
+    }
+    return false; // Critical chunks not loaded
+  }
+  
+  return true; // All critical chunks loaded
+}
+
+// --- Chunk Preloading for Physics ---
+
+/**
+ * Requests chunks needed for physics calculations around the player
+ * This uses the main chunk loading system instead of trying to preload separately
+ */
+function requestPhysicsChunks(
+  playerPosition: vec3,
+  chunkManager: any
+): void {
+  // Calculate the area around the player that needs to be loaded for physics
+  const playerAABB = getPlayerAABB(playerPosition);
+  const expandedAABB = expandAABB(playerAABB, 2, 2, 2); // Add some buffer
+  
+  // Get all chunk positions that intersect with the expanded AABB
+  const minChunkX = Math.floor(expandedAABB.min[0] / CHUNK_SIZE_X);
+  const maxChunkX = Math.floor(expandedAABB.max[0] / CHUNK_SIZE_X);
+  const minChunkY = Math.floor(expandedAABB.min[1] / CHUNK_SIZE_Y);
+  const maxChunkY = Math.floor(expandedAABB.max[1] / CHUNK_SIZE_Y);
+  const minChunkZ = Math.floor(expandedAABB.min[2] / CHUNK_SIZE_Z);
+  const maxChunkZ = Math.floor(expandedAABB.max[2] / CHUNK_SIZE_Z);
+  
+  // Request chunks through the main system if worker manager is available
+  if (chunkManager.workerManager) {
+    for (let y = minChunkY; y <= maxChunkY; y++) {
+      for (let z = minChunkZ; z <= maxChunkZ; z++) {
+        for (let x = minChunkX; x <= maxChunkX; x++) {
+          const chunkPos = vec3.fromValues(x, y, z);
+          const key = getChunkKey(chunkPos);
+          
+          // Only request if not already in cache
+          if (!chunkManager.cache?.has(key)) {
+            chunkManager.workerManager.queueTask({
+              type: "requestChunk",
+              position: chunkPos,
+            });
+          }
+        }
+      }
+    }
+  }
+}
+
 // --- Physics Update Function (To be refactored for AABB) ---
 export function updatePhysics(
   playerState: PlayerState,
@@ -294,6 +378,26 @@ export function updatePhysics(
 
   if (keyboardState.pressedKeys.has("KeyF")) {
     playerState.isFlying = !playerState.isFlying;
+  }
+
+  // Request chunks needed for physics (this triggers the main chunk loading system)
+  requestPhysicsChunks(position, chunkManager);
+  
+  // Check if critical chunks for physics are loaded (only immediate area)
+  const playerAABB = getPlayerAABB(position);
+  const expandedAABB = expandAABB(playerAABB, 0.5, 0.5, 0.5); // Smaller area
+  const criticalChunksLoaded = checkCriticalChunksLoaded(expandedAABB, chunkManager);
+  
+  // If critical chunks aren't loaded, allow basic physics but limit movement
+  if (!criticalChunksLoaded) {
+    // Allow gravity and basic physics, but block horizontal movement
+    velocity[0] = 0;
+    velocity[2] = 0;
+    // Don't return early - let gravity and other physics continue
+    // Only log occasionally to avoid spam
+    if (Math.random() < 0.01) { // 1% chance to log
+      log("Physics", "Critical chunks not loaded, limiting horizontal movement");
+    }
   }
 
   // 1. Calculate Desired Velocity based on input

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IndexedDB Test</title>
+</head>
+<body>
+    <h1>IndexedDB Test</h1>
+    <div id="status">Testing...</div>
+    <div id="details"></div>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const detailsDiv = document.getElementById('details');
+
+        function log(message) {
+            console.log(message);
+            detailsDiv.innerHTML += '<p>' + message + '</p>';
+        }
+
+        function testIndexedDB() {
+            log('Starting IndexedDB test...');
+            
+            // Check if IndexedDB is available
+            if (!window.indexedDB) {
+                statusDiv.textContent = 'FAILED: IndexedDB not available';
+                log('IndexedDB is not available in this browser');
+                return;
+            }
+
+            log('IndexedDB is available');
+
+            // Try to open a test database
+            const request = indexedDB.open('test-db', 1);
+            
+            request.onerror = () => {
+                statusDiv.textContent = 'FAILED: Could not open IndexedDB';
+                log('Error opening IndexedDB: ' + request.error);
+            };
+
+            request.onsuccess = () => {
+                statusDiv.textContent = 'SUCCESS: IndexedDB is working';
+                log('Successfully opened IndexedDB');
+                
+                // Close the test database
+                request.result.close();
+                log('Test completed successfully');
+            };
+
+            request.onupgradeneeded = (event) => {
+                log('Database upgrade needed');
+                const db = event.target.result;
+                const store = db.createObjectStore('test-store', { keyPath: 'id' });
+                log('Created test object store');
+            };
+
+            request.onblocked = () => {
+                statusDiv.textContent = 'FAILED: IndexedDB blocked';
+                log('IndexedDB blocked - another connection is open');
+            };
+        }
+
+        // Run the test
+        testIndexedDB();
+    </script>
+</body>
+</html> 

@@ -26,24 +26,32 @@ export class HybridChunkManager {
   private isInitialized = false;
   private pendingSaves = new Map<string, Uint8Array>();
   private saveTimeout: number | null = null;
+  private workerManager: any; // Reference to worker manager for storage operations
 
-  constructor(maxCacheSize = 1000) {
+  constructor(maxCacheSize = 1000, workerManager?: any) {
     this.storage = new ChunkStorage();
     this.cache = new Map();
     this.maxCacheSize = maxCacheSize;
+    this.workerManager = workerManager;
+  }
+
+  setWorkerManager(workerManager: any): void {
+    this.workerManager = workerManager;
   }
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
     
     try {
-      // Initialize storage
-      await this.storage.getStats(); // This will trigger DB initialization
+      // Initialize storage without loading all stats
+      await this.storage.ensureInitialized(); // This just initializes the DB connection
       this.isInitialized = true;
       log("HybridChunkManager", "Initialized successfully");
     } catch (error) {
-      log.error("HybridChunkManager", "Failed to initialize:", error);
-      throw error;
+      log.error("HybridChunkManager", "Failed to initialize storage, continuing without persistence:", error);
+      // Continue without storage - chunks will only be cached in memory
+      this.isInitialized = true;
+      log("HybridChunkManager", "Initialized in memory-only mode");
     }
   }
 
@@ -70,18 +78,22 @@ export class HybridChunkManager {
 
     this.cacheMisses++;
 
-    // Try to load from storage
+    // Load from storage directly (no worker storage operations)
+    return this.loadFromStorageDirect(position);
+  }
+
+  private async loadFromStorageDirect(position: vec3): Promise<Uint8Array | null> {
     try {
       const data = await this.storage.loadChunk(position);
       if (data) {
-        // Add to cache
+        const key = getChunkKey(position);
         this.addToCache(key, data);
         return data;
       } else {
         return null;
       }
     } catch (error) {
-      log.error("HybridChunkManager", `Failed to load chunk ${key} from storage:`, error);
+      log.error("HybridChunkManager", `Failed to load chunk ${getChunkKey(position)} from storage:`, error);
       return null;
     }
   }
@@ -93,34 +105,9 @@ export class HybridChunkManager {
     // Update cache
     this.addToCache(key, data);
 
-    // Queue for batch save instead of immediate save
-    this.pendingSaves.set(key, data);
-    this.scheduleBatchSave();
-  }
-
-  private scheduleBatchSave(): void {
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout);
-    }
-
-    this.saveTimeout = setTimeout(() => {
-      this.flushPendingSaves();
-    }, 100) as any; // Batch saves every 100ms
-  }
-
-  private async flushPendingSaves(): Promise<void> {
-    if (this.pendingSaves.size === 0) return;
-
-    const chunks = Array.from(this.pendingSaves.entries()).map(([key, data]) => {
-      const [x, y, z] = key.split(',').map(Number);
-      return { position: vec3.fromValues(x, y, z), data };
-    });
-
-    this.pendingSaves.clear();
-
-    // Save to storage asynchronously (don't wait for it)
-    this.storage.saveChunks(chunks).catch(error => {
-      log.error("HybridChunkManager", "Failed to save chunks in batch:", error);
+    // Save to storage directly (no worker storage operations)
+    this.storage.saveChunk(position, data).catch(error => {
+      log.error("HybridChunkManager", `Failed to save chunk ${key} to storage:`, error);
     });
   }
 
@@ -135,7 +122,7 @@ export class HybridChunkManager {
     // Remove from pending saves
     this.pendingSaves.delete(key);
 
-    // Delete from storage
+    // Delete from storage directly (no worker storage operations)
     try {
       await this.storage.deleteChunk(position);
     } catch (error) {
@@ -289,7 +276,19 @@ export class HybridChunkManager {
       this.pendingSaves.set(key, data);
     }
 
-    this.scheduleBatchSave();
+    // Save chunks using workers if available
+    if (this.workerManager) {
+      for (const { position, data } of chunks) {
+        const worker = this.workerManager.getAvailableWorker();
+        if (worker) {
+          worker.postMessage({
+            type: "saveChunk",
+            position: position,
+            data: data
+          });
+        }
+      }
+    }
   }
 
   // Preload chunks into cache
@@ -342,5 +341,21 @@ export class HybridChunkManager {
   // Force flush pending saves (for shutdown)
   async flush(): Promise<void> {
     await this.flushPendingSaves();
+  }
+
+  private async flushPendingSaves(): Promise<void> {
+    if (this.pendingSaves.size === 0) return;
+
+    const chunks = Array.from(this.pendingSaves.entries()).map(([key, data]) => {
+      const [x, y, z] = key.split(',').map(Number);
+      return { position: vec3.fromValues(x, y, z), data };
+    });
+
+    this.pendingSaves.clear();
+
+    // Save to storage asynchronously (don't wait for it)
+    this.storage.saveChunks(chunks).catch(error => {
+      log.error("HybridChunkManager", "Failed to save chunks in batch:", error);
+    });
   }
 } 

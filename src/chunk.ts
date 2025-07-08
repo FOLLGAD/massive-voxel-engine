@@ -212,7 +212,7 @@ export class Chunk {
 
   constructor(position: vec3, data?: Uint8Array) {
     this.position = position;
-    this.data = data ?? new Uint8Array(new SharedArrayBuffer(CHUNK_VOLUME));
+    this.data = data ?? new Uint8Array(CHUNK_VOLUME);
   }
 
   static withData(position: vec3, data: Uint8Array): Chunk {

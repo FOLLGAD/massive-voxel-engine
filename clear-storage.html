@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clear IndexedDB Storage</title>
+</head>
+<body>
+    <h1>Clear IndexedDB Storage</h1>
+    <button onclick="clearStorage()">Clear VoxelEngineChunks Database</button>
+    <div id="status"></div>
+
+    <script>
+        function clearStorage() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = 'Clearing storage...';
+            
+            const request = indexedDB.deleteDatabase('VoxelEngineChunks');
+            
+            request.onsuccess = () => {
+                statusDiv.textContent = 'SUCCESS: Database cleared!';
+                console.log('Database cleared successfully');
+            };
+            
+            request.onerror = () => {
+                statusDiv.textContent = 'ERROR: Failed to clear database';
+                console.error('Failed to clear database:', request.error);
+            };
+        }
+    </script>
+</body>
+</html> 

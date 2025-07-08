@@ -38,10 +38,11 @@ const FACE_NORMALS = {
 };
 
 // --- Global State ---
-const chunkManager = new HybridChunkManager(500); // Cache 500 chunks in RAM
+const chunkManager = new HybridChunkManager(500); // Cache 2000 chunks in RAM for better physics coverage
 const requestedChunkKeys = new Set<string>();
 const playerState = new PlayerState();
 let rendererState: Renderer; // Will be initialized later
+let chunksReceived = 0; // Counter for received chunks
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
@@ -122,15 +123,17 @@ async function main() {
     return; // Stop if renderer fails
   }
 
-  // Initialize hybrid chunk manager
-  log("Main", "Initializing hybrid chunk manager...");
-  await chunkManager.initialize();
-
   // Initialize worker pool
   const numWorkers = navigator.hardwareConcurrency || 4;
   log("Main", `Initializing ${numWorkers} workers...`);
 
   const workerManager = new WorkerManager(numWorkers);
+
+  // Initialize hybrid chunk manager with worker manager
+  log("Main", "Initializing hybrid chunk manager...");
+  chunkManager.setWorkerManager(workerManager);
+  await chunkManager.initialize();
+  log("Main", "Hybrid chunk manager initialized");
 
   let blockToPlace: VoxelType = VoxelType.STONE;
 
@@ -142,11 +145,14 @@ async function main() {
     if (type === "chunkDataAvailable") {
       const { position, voxels } = event.data;
       const key = getChunkKey(position);
-      // 'voxels' is now a Uint8Array view on the SharedArrayBuffer from the worker
-      const sharedVoxelData = voxels as Uint8Array; // Type assertion for clarity
-      // Save to hybrid chunk manager (both cache and storage)
-      chunkManager.setChunk(position, sharedVoxelData);
+      chunksReceived++;
+      log("Main", `Received chunk data for ${key}`);
+              // 'voxels' is now a Uint8Array from the worker
+        const voxelData = voxels as Uint8Array; // Type assertion for clarity
+        // Save to hybrid chunk manager (both cache and storage)
+        chunkManager.setChunk(position, voxelData);
       requestedChunkKeys.add(key);
+      log("Main", `Chunk ${key} saved to manager, total requested: ${requestedChunkKeys.size}`);
     } else if (type === "chunkMeshUpdated") {
       if (!rendererState) throw new Error("Renderer not found");
 
@@ -155,14 +161,21 @@ async function main() {
         vertices: verticesBuffer,
         indices: indicesBuffer,
         visibilityBits,
+        modifiedChunkData,
       } = event.data as {
         position: vec3;
         vertices: Float32Array;
         indices: Uint32Array;
         visibilityBits: number;
+        modifiedChunkData?: Uint8Array;
       };
       const vertices = new Float32Array(verticesBuffer);
       const indices = new Uint32Array(indicesBuffer);
+
+      // Save modified chunk data if provided (from renderChunk operations)
+      if (modifiedChunkData) {
+        chunkManager.setChunk(position, modifiedChunkData);
+      }
 
       const minX = position[0] * CHUNK_SIZE_X;
       const minY = position[1] * CHUNK_SIZE_Y;
@@ -185,6 +198,7 @@ async function main() {
           aabb,
           visibilityBits
         );
+        log("Main", `Updated chunk geometry for ${getChunkKey(position)}, vertices: ${vertices.length}, indices: ${indices.length}`);
       } catch (error) {
         const key = getChunkKey(position);
         log.error("Main", `Error processing mesh update for ${key}:`, error);
@@ -489,7 +503,9 @@ async function main() {
       lastHandledChunkPosition = vec3.clone(playerState.position);
 
       const playerChunk = getChunkOfPosition(playerState.position);
+      log("Main", `Player at position ${playerState.position[0]},${playerState.position[1]},${playerState.position[2]} -> chunk ${playerChunk[0]},${playerChunk[1]},${playerChunk[2]}`);
 
+      let chunksRequested = 0;
       for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
         for (
           let zOffset = -LOAD_RADIUS_XZ;
@@ -509,6 +525,7 @@ async function main() {
             const key = getChunkKey(chunkPos);
             if (!requestedChunkKeys.has(key)) {
               requestedChunkKeys.add(key);
+              chunksRequested++;
               workerManager.queueTask({
                 type: "requestChunk",
                 position: chunkPos,
@@ -516,6 +533,9 @@ async function main() {
             }
           }
         }
+      }
+      if (chunksRequested > 0) {
+        log("Main", `Requested ${chunksRequested} new chunks, total requested: ${requestedChunkKeys.size}`);
       }
     }
 

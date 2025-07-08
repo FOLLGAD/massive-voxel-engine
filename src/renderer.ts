@@ -81,11 +81,11 @@ const cullChunks = (
   const startChunkInfo = allChunkInfos.get(startChunkKey);
 
   if (!startChunkInfo) {
-    console.error(
-      "Start chunk not found",
-      startChunkPos,
-      startChunkKey,
-    )
+    // console.error(
+    //   "Start chunk not found",
+    //   startChunkPos,
+    //   startChunkKey,
+    // )
     // Start chunk doesn't exist, isn't loaded, or is outside frustum
     return [];
   }
