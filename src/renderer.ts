@@ -72,21 +72,10 @@ const getFaceFromDirection = (direction: number): number => {
 const cullChunks = (
   allChunkInfos: Map<string, ChunkGeometryInfo>,
   frustumPlanes: Plane[],
-  cameraPosition: vec3,
-  enableAdvancedCulling: boolean
+  cameraPosition: vec3
 ): ChunkGeometryInfo[] => {
-  const startTime = performance.now();
   let totalIntersectionTime = 0;
-
-  if (!enableAdvancedCulling) {
-    const result = [...allChunkInfos.values()].filter(chunkInfo => {
-      const intersectStart = performance.now();
-      const intersects = Renderer.intersectFrustumAABB(frustumPlanes, chunkInfo.aabb);
-      totalIntersectionTime += performance.now() - intersectStart;
-      return intersects;
-    });
-    return result;
-  }
+  
   const startChunkPos = getChunkOfPosition(cameraPosition);
   const startChunkKey = getChunkKey(startChunkPos);
   const startChunkInfo = allChunkInfos.get(startChunkKey);
@@ -903,8 +892,7 @@ export class Renderer {
       position: vec3,
       target: vec3
     },
-    enableDebugView = true,
-    enableAdvancedCulling = false
+    enableDebugView = true
   ): { totalTriangles: number; drawnChunks: number } {
     const frameStartTime = performance.now();
     let extractPlanesDuration = 0;
@@ -1033,8 +1021,7 @@ export class Renderer {
     const visibleChunks = cullChunks(
       this.chunkManager.chunkGeometryInfo,
       frustumPlanes,
-      cameraPosition,
-      enableAdvancedCulling
+      cameraPosition
     );
     cullChunksDuration = performance.now() - cullChunksStart;
 

@@ -12,7 +12,36 @@ const terrain = new Terrain();
 
 // --- Worker Message Handling ---
 self.onmessage = (event: MessageEvent) => {
-  const { type, position: _position } = event.data as {
+  const { type } = event.data;
+  
+  if (type === "unloadChunks") {
+    const { allChunkKeys, playerPosition, loadRadiusXZ, loadRadiusY, unloadBufferXZ, unloadBufferY } = event.data;
+    const chunksToUnload: string[] = [];
+    
+    for (const key of allChunkKeys) {
+      // Parse chunk key back to position (assuming format "x,y,z")
+      const [x, y, z] = key.split(',').map(Number);
+      const dx = Math.abs(x - playerPosition[0]);
+      const dy = Math.abs(y - playerPosition[1]);
+      const dz = Math.abs(z - playerPosition[2]);
+      
+      if (
+        dx > loadRadiusXZ + unloadBufferXZ ||
+        dy > loadRadiusY + unloadBufferY ||
+        dz > loadRadiusXZ + unloadBufferXZ
+      ) {
+        chunksToUnload.push(key);
+      }
+    }
+    
+    self.postMessage({
+      type: "chunksToUnload",
+      chunks: chunksToUnload
+    });
+    return;
+  }
+  
+  const { position: _position } = event.data as {
     type: string;
     position: vec3;
   };

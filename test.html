@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Massive Voxel Engine</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #debug-info {
+            backdrop-filter: blur(10px);
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            /* background-color: rgba(0, 0, 0, 0.5); */
+            color: white;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre; /* Preserve whitespace for formatting */
+            border-radius: 10px;
+        }
+        #toolbar {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="webgpu-canvas"></canvas>
+    <div id="toolbar"></div>
+    <script src="/src/test.ts"></script>
+</body>
+</html> 

@@ -61,48 +61,55 @@ function insertAndMergeFreeBlock(
   freeList: FreeSpaceInfo[],
   newBlock: FreeSpaceInfo
 ) {
-  let inserted = false;
-  for (let i = 0; i < freeList.length; i++) {
-    if (newBlock.offset < freeList[i].offset) {
-      // Insert before element i
-      freeList.splice(i, 0, newBlock);
-      inserted = true;
+  // Fast path: check if we can append to the end
+  if (freeList.length === 0) {
+    freeList.push(newBlock);
+    return;
+  }
 
-      // Attempt merge with previous (if exists and adjacent)
-      if (
-        i > 0 &&
-        freeList[i - 1].offset + freeList[i - 1].size === newBlock.offset
-      ) {
-        freeList[i - 1].size += newBlock.size;
-        freeList.splice(i, 1); // Remove newBlock (now merged)
-        i--; // Adjust index after removal
-      }
+  const lastBlock = freeList[freeList.length - 1];
+  if (newBlock.offset >= lastBlock.offset + lastBlock.size) {
+    // Can append to end, check for merge
+    if (lastBlock.offset + lastBlock.size === newBlock.offset) {
+      lastBlock.size += newBlock.size; // Merge with last
+    } else {
+      freeList.push(newBlock); // Just append
+    }
+    return;
+  }
 
-      // Attempt merge with next (element at new index i, which was originally at i or i+1)
-      const currentBlock = freeList[i];
-      if (
-        i + 1 < freeList.length &&
-        currentBlock.offset + currentBlock.size === freeList[i + 1].offset
-      ) {
-        currentBlock.size += freeList[i + 1].size;
-        freeList.splice(i + 1, 1); // Remove next block
-      }
-      break; // Exit loop once inserted and merged
+  // Binary search for insertion point
+  let left = 0;
+  let right = freeList.length;
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2);
+    if (freeList[mid].offset < newBlock.offset) {
+      left = mid + 1;
+    } else {
+      right = mid;
     }
   }
 
-  // If not inserted yet, it belongs at the end
-  if (!inserted) {
-    // Attempt merge with last element (if exists and adjacent)
-    if (
-      freeList.length > 0 &&
-      freeList[freeList.length - 1].offset +
-      freeList[freeList.length - 1].size ===
-      newBlock.offset
-    ) {
-      freeList[freeList.length - 1].size += newBlock.size;
-    } else {
-      freeList.push(newBlock);
+  // Insert at position 'left'
+  freeList.splice(left, 0, newBlock);
+
+  // Merge with previous block if adjacent
+  if (left > 0) {
+    const prevBlock = freeList[left - 1];
+    if (prevBlock.offset + prevBlock.size === newBlock.offset) {
+      prevBlock.size += newBlock.size;
+      freeList.splice(left, 1); // Remove the inserted block
+      left--; // Adjust index
+    }
+  }
+
+  // Merge with next block if adjacent
+  const currentBlock = freeList[left];
+  if (left + 1 < freeList.length) {
+    const nextBlock = freeList[left + 1];
+    if (currentBlock.offset + currentBlock.size === nextBlock.offset) {
+      currentBlock.size += nextBlock.size;
+      freeList.splice(left + 1, 1); // Remove the next block
     }
   }
 }

@@ -25,7 +25,6 @@ import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
 
 let debugMode = false;
-let enableAdvancedCulling = true;
 log("Main", "Main script loaded.");
 
 const FACE_NORMALS = {
@@ -185,6 +184,14 @@ async function main() {
         const key = getChunkKey(position);
         log.error("Main", `Error processing mesh update for ${key}:`, error);
       }
+    } else if (type === "chunksToUnload") {
+      const { chunks } = event.data;
+      
+      if (chunks.length > 0) {
+        // Add chunks to unload queue for batched processing
+        chunksToUnloadQueue.push(...chunks);
+        log("Main", `Queued ${chunks.length} chunks for unloading (${chunksToUnloadQueue.length} total in queue)`);
+      }
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
@@ -333,9 +340,6 @@ async function main() {
     if (keyboardState.pressedKeys.has("KeyV")) {
       debugMode = !debugMode;
     }
-    if (keyboardState.pressedKeys.has("KeyT")) {
-      enableAdvancedCulling = !enableAdvancedCulling;
-    }
     if (keyboardState.downKeys.has("KeyH")) {
       fov += 0.01;
     }
@@ -406,24 +410,30 @@ async function main() {
     keyboardState.mouseRightClicked = false;
   };
 
+  let chunksToUnloadQueue: string[] = [];
+  let lastUnloadCheck = 0;
+  
   const unloadChunks = () => {
-    const playerChunk = getChunkOfPosition(playerState.position);
-
-    for (const [
-      key,
-      chunkMesh,
-    ] of rendererState.chunkManager.chunkGeometryInfo.entries()) {
-      const dx = Math.abs(chunkMesh.position[0] - playerChunk[0]);
-      const dy = Math.abs(chunkMesh.position[1] - playerChunk[1]);
-      const dz = Math.abs(chunkMesh.position[2] - playerChunk[2]);
-      if (
-        dx > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ ||
-        dy > LOAD_RADIUS_Y + UNLOAD_BUFFER_Y ||
-        dz > LOAD_RADIUS_XZ + UNLOAD_BUFFER_XZ
-      ) {
-        rendererState.chunkManager.deleteChunk(chunkMesh.position);
-        loadedChunkData.delete(key);
-        requestedChunkKeys.delete(key);
+    const now = performance.now();
+    
+    // Only check for new chunks to unload every 5 seconds
+    if (now - lastUnloadCheck > 5000) {
+      lastUnloadCheck = now;
+      const playerChunk = getChunkOfPosition(playerState.position);
+      
+      // Get all chunk keys and send to worker for processing
+      const allChunkKeys = Array.from(rendererState.chunkManager.chunkGeometryInfo.keys());
+      
+      if (allChunkKeys.length > 0) {
+        workerManager.queueTask({
+          type: "unloadChunks",
+          allChunkKeys,
+          playerPosition: playerChunk,
+          loadRadiusXZ: LOAD_RADIUS_XZ,
+          loadRadiusY: LOAD_RADIUS_Y,
+          unloadBufferXZ: UNLOAD_BUFFER_XZ,
+          unloadBufferY: UNLOAD_BUFFER_Y
+        });
       }
     }
 
@@ -432,8 +442,30 @@ async function main() {
         requestIdleCallback(unloadChunks, {
           timeout: 2500,
         }),
-      5000
+      100 // Check more frequently for queue processing
     );
+  };
+  
+  // Separate function to process the unload queue in batches
+  const processUnloadQueue = () => {
+    if (chunksToUnloadQueue.length === 0) {
+      requestAnimationFrame(processUnloadQueue);
+      return;
+    }
+    
+    const MAX_CHUNKS_PER_FRAME = 500; // Higher limit for faster unloading
+    const chunksThisFrame = chunksToUnloadQueue.splice(0, MAX_CHUNKS_PER_FRAME);
+    
+    for (const key of chunksThisFrame) {
+      const chunkInfo = rendererState.chunkManager.chunkGeometryInfo.get(key);
+      if (chunkInfo) {
+        rendererState.chunkManager.deleteChunk(chunkInfo.position);
+        loadedChunkData.delete(key);
+        requestedChunkKeys.delete(key);
+      }
+    }
+    
+    requestAnimationFrame(processUnloadQueue);
   };
 
   let lastHandledChunkPosition: vec3 | null = null;
@@ -482,6 +514,7 @@ async function main() {
   fn();
 
   unloadChunks();
+  processUnloadQueue(); // Start the queue processor
 
   let debugCameraEnabled = false;
   let fov = Math.PI / 4;
@@ -535,8 +568,7 @@ async function main() {
           target: debugCameraTarget,
         }
         : undefined,
-      debugMode,
-      enableAdvancedCulling
+      debugMode
     );
     renderTimeMs = performance.now() - renderStart;
     // console.timeEnd("renderFrame");

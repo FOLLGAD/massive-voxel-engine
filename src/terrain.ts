@@ -204,11 +204,11 @@ export class Terrain {
 
           // --- Basic Terrain Placement ---
           if (worldY > height) {
-            if (Math.random() < 3e-6) {
-              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STAR);
-            } else {
               chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
-            }
+            //if (Math.random() < 3e-6) {
+            //  chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STAR);
+            //} else {
+            //}
           } else if (worldY <= height && worldY > height - 3) {
             chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.GRASS);
           } else if (worldY > height - stoneDepth) {
