@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chunk Storage Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            margin: 5px;
+            padding: 8px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 3px;
+            padding: 10px;
+            margin: 10px 0;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+        .info { color: #17a2b8; }
+    </style>
+</head>
+<body>
+    <h1>Chunk Storage Test</h1>
+    
+    <div class="test-section">
+        <h3>Storage Operations</h3>
+        <button onclick="testSaveChunk()">Save Test Chunk</button>
+        <button onclick="testLoadChunk()">Load Test Chunk</button>
+        <button onclick="testDeleteChunk()">Delete Test Chunk</button>
+        <button onclick="testStats()">Get Stats</button>
+        <button onclick="testClearAll()">Clear All</button>
+    </div>
+
+    <div class="test-section">
+        <h3>Cache Operations</h3>
+        <button onclick="testCacheHit()">Test Cache Hit</button>
+        <button onclick="testCacheEviction()">Test Cache Eviction</button>
+        <button onclick="testBatchOperations()">Test Batch Operations</button>
+    </div>
+
+    <div class="test-section">
+        <h3>Log Output</h3>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script type="module">
+        import { HybridChunkManager } from './src/hybrid-chunk-manager.js';
+        import { vec3 } from './node_modules/gl-matrix/esm/index.js';
+
+        let chunkManager;
+        let logElement;
+
+        // Simple logging function
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = type;
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logElement.appendChild(logEntry);
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(message);
+        }
+
+        // Initialize
+        async function init() {
+            logElement = document.getElementById('log');
+            log('Initializing chunk manager...');
+            
+            try {
+                chunkManager = new HybridChunkManager(10); // Small cache for testing
+                await chunkManager.initialize();
+                log('Chunk manager initialized successfully', 'success');
+            } catch (error) {
+                log(`Failed to initialize: ${error.message}`, 'error');
+            }
+        }
+
+        // Test functions
+        window.testSaveChunk = async () => {
+            try {
+                const position = vec3.fromValues(1, 2, 3);
+                const data = new Uint8Array(4096); // 16x16x16 chunk
+                data.fill(1); // Fill with test data
+                
+                await chunkManager.setChunk(position, data);
+                log('Test chunk saved successfully', 'success');
+            } catch (error) {
+                log(`Save failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testLoadChunk = async () => {
+            try {
+                const position = vec3.fromValues(1, 2, 3);
+                const data = await chunkManager.getChunk(position);
+                
+                if (data) {
+                    log(`Test chunk loaded: ${data.length} bytes`, 'success');
+                    log(`First few bytes: ${Array.from(data.slice(0, 10))}`);
+                } else {
+                    log('Test chunk not found', 'error');
+                }
+            } catch (error) {
+                log(`Load failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testDeleteChunk = async () => {
+            try {
+                const position = vec3.fromValues(1, 2, 3);
+                await chunkManager.deleteChunk(position);
+                log('Test chunk deleted successfully', 'success');
+            } catch (error) {
+                log(`Delete failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testStats = async () => {
+            try {
+                const stats = await chunkManager.getStats();
+                log('Storage stats:', 'info');
+                log(`  Cache size: ${stats.cacheSize}`);
+                log(`  Cache hits: ${stats.cacheHits}`);
+                log(`  Cache misses: ${stats.cacheMisses}`);
+                log(`  Hit rate: ${(stats.hitRate * 100).toFixed(1)}%`);
+                log(`  Storage chunks: ${stats.storageStats.totalChunks}`);
+                log(`  Storage size: ${(stats.storageStats.totalSizeBytes / 1024 / 1024).toFixed(2)} MB`);
+            } catch (error) {
+                log(`Stats failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testClearAll = async () => {
+            try {
+                await chunkManager.clearAll();
+                log('All data cleared successfully', 'success');
+            } catch (error) {
+                log(`Clear failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testCacheHit = async () => {
+            try {
+                const position = vec3.fromValues(5, 5, 5);
+                const data = new Uint8Array(4096);
+                data.fill(5);
+                
+                // Save chunk
+                await chunkManager.setChunk(position, data);
+                log('Chunk saved for cache test', 'info');
+                
+                // Load it multiple times to test cache hits
+                for (let i = 0; i < 3; i++) {
+                    const loadedData = await chunkManager.getChunk(position);
+                    log(`Cache test ${i + 1}: ${loadedData ? 'hit' : 'miss'}`, 'info');
+                }
+                
+                // Check stats
+                const stats = await chunkManager.getStats();
+                log(`Final hit rate: ${(stats.hitRate * 100).toFixed(1)}%`, 'success');
+            } catch (error) {
+                log(`Cache test failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testCacheEviction = async () => {
+            try {
+                log('Testing cache eviction with small cache size...', 'info');
+                
+                // Fill cache beyond its limit
+                for (let i = 0; i < 15; i++) {
+                    const position = vec3.fromValues(i, i, i);
+                    const data = new Uint8Array(4096);
+                    data.fill(i);
+                    await chunkManager.setChunk(position, data);
+                }
+                
+                const stats = await chunkManager.getStats();
+                log(`Cache size after filling: ${stats.cacheSize}`, 'info');
+                
+                // Try to access the first chunk (should be evicted)
+                const firstChunk = await chunkManager.getChunk(vec3.fromValues(0, 0, 0));
+                log(`First chunk accessible: ${firstChunk ? 'yes' : 'no'}`, 'info');
+                
+            } catch (error) {
+                log(`Cache eviction test failed: ${error.message}`, 'error');
+            }
+        };
+
+        window.testBatchOperations = async () => {
+            try {
+                log('Testing batch operations...', 'info');
+                
+                // Create multiple chunks
+                const chunks = [];
+                for (let i = 0; i < 5; i++) {
+                    chunks.push({
+                        position: vec3.fromValues(10 + i, 10 + i, 10 + i),
+                        data: new Uint8Array(4096)
+                    });
+                    chunks[i].data.fill(10 + i);
+                }
+                
+                // Save in batch
+                await chunkManager.setChunks(chunks);
+                log('Batch save completed', 'success');
+                
+                // Load in batch
+                const positions = chunks.map(c => c.position);
+                const loadedChunks = await chunkManager.getChunks(positions);
+                log(`Batch load completed: ${loadedChunks.size} chunks loaded`, 'success');
+                
+            } catch (error) {
+                log(`Batch operations test failed: ${error.message}`, 'error');
+            }
+        };
+
+        // Start initialization
+        init();
+    </script>
+</body>
+</html> 

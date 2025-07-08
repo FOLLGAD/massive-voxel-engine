@@ -47,12 +47,6 @@ self.onmessage = (event: MessageEvent) => {
   };
   const position = vec3.fromValues(_position[0], _position[1], _position[2]);
   if (type === "requestChunk") {
-    log(
-      "Worker",
-      `Received requestChunk for ${JSON.stringify(
-        position
-      )}. Greedy enabled: ${ENABLE_GREEDY_MESHING}`
-    ); // Log toggle state
     try {
       const chunk = terrain.generateTerrain(position);
 
@@ -66,11 +60,6 @@ self.onmessage = (event: MessageEvent) => {
       }
 
       const mesh = chunk.generateMesh(); // Calls the appropriate mesher based on the flag
-      log(
-        "Worker",
-        `Mesh generated. Vertices count: ${mesh.vertices.length / 9
-        }, Indices count: ${mesh.indices.length}`
-      ); // Vertices are pos+color+normal (9 floats)
 
       self.postMessage({
         type: "chunkMeshUpdated",
@@ -85,7 +74,6 @@ self.onmessage = (event: MessageEvent) => {
   } else if (type === "renderChunk") {
     const { position, data: dataBuffer } = event.data;
     const data = new Uint8Array(dataBuffer);
-    log("Worker", "Rendering chunk", position);
     const chunk = new Chunk(position, data);
     const mesh = chunk.generateMesh();
 

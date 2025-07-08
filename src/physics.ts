@@ -82,37 +82,29 @@ function isSolidVoxel(voxelType: VoxelType): boolean {
   return voxelType !== VoxelType.AIR;
 }
 
-// Get voxel type at world coordinates (Needs access to loadedChunkData)
+// Get voxel type at world coordinates (Needs access to chunkManager)
 function getVoxelAt(
   position: vec3,
-  loadedChunkData: Map<string, Uint8Array>
+  chunkManager: any
 ): VoxelType {
   const chunkPosition = getChunkOfPosition(position);
 
+  // Try to get from cache first (synchronous)
   const key = getChunkKey(chunkPosition);
-  const chunkData = loadedChunkData.get(key);
-
-  if (!chunkData) {
-    log.warn(
-      "Physics",
-      `Chunk data not loaded for ${key} at getVoxelAt(${position[0].toFixed(
-        1
-      )}, ${position[1].toFixed(1)}, ${position[2].toFixed(1)})`
+  const cached = chunkManager.cache?.get(key);
+  
+  if (cached) {
+    const chunk = new Chunk(chunkPosition, cached.data);
+    const localPos = vec3.fromValues(
+      Math.floor(position[0]) - chunk.position[0] * CHUNK_SIZE_X,
+      Math.floor(position[1]) - chunk.position[1] * CHUNK_SIZE_Y,
+      Math.floor(position[2]) - chunk.position[2] * CHUNK_SIZE_Z
     );
-    return 0; // Treat unloaded chunks as Air for safety
+    return chunk.getVoxel(localPos);
   }
 
-  const chunk = new Chunk(chunkPosition, chunkData);
-
-  const localPos = vec3.fromValues(
-    Math.floor(position[0]) - chunk.position[0] * CHUNK_SIZE_X,
-    Math.floor(position[1]) - chunk.position[1] * CHUNK_SIZE_Y,
-    Math.floor(position[2]) - chunk.position[2] * CHUNK_SIZE_Z
-  );
-
-  const voxel = chunk.getVoxel(localPos);
-
-  return voxel;
+  // If not in cache, treat as air for physics (will be loaded asynchronously)
+  return 0; // Treat unloaded chunks as Air for safety
 }
 
 /**
@@ -121,7 +113,7 @@ function getVoxelAt(
  */
 function getPotentialVoxelCollisions(
   aabb: AABB,
-  loadedChunkData: Map<string, Uint8Array>
+  chunkManager: any
 ): AABB[] {
   const collisions: AABB[] = [];
   const minX = Math.floor(aabb.min[0]);
@@ -136,7 +128,7 @@ function getPotentialVoxelCollisions(
       for (let x = minX; x < maxX; x++) {
         const voxelType = getVoxelAt(
           vec3.fromValues(x + 0.5, y + 0.5, z + 0.5),
-          loadedChunkData
+          chunkManager
         ); // Check center of voxel
         if (isSolidVoxel(voxelType)) {
           const voxelAABB = getVoxelAABB(x, y, z);
@@ -296,7 +288,7 @@ export function updatePhysics(
   keyboardState: KeyboardState,
   cameraYaw: number, // Needed for movement direction
   deltaTimeMs: number,
-  loadedChunkData: Map<string, Uint8Array> // Pass chunk data map
+  chunkManager: any // Pass chunk manager
 ): PlayerState {
   const { position, velocity } = playerState;
 
@@ -343,7 +335,7 @@ export function updatePhysics(
   const sweptAABB = expandAABB(currentAABB, dx, dy, dz);
   const potentialCollisions = getPotentialVoxelCollisions(
     sweptAABB,
-    loadedChunkData
+    chunkManager
   );
 
   // 5.2 Resolve Y-axis

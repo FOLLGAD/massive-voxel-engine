@@ -23,6 +23,7 @@ import { KeyboardState } from "./keyboard";
 import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
+import { HybridChunkManager } from "./hybrid-chunk-manager";
 
 let debugMode = false;
 log("Main", "Main script loaded.");
@@ -37,7 +38,7 @@ const FACE_NORMALS = {
 };
 
 // --- Global State ---
-const loadedChunkData = new Map<string, Uint8Array>();
+const chunkManager = new HybridChunkManager(500); // Cache 500 chunks in RAM
 const requestedChunkKeys = new Set<string>();
 const playerState = new PlayerState();
 let rendererState: Renderer; // Will be initialized later
@@ -121,6 +122,10 @@ async function main() {
     return; // Stop if renderer fails
   }
 
+  // Initialize hybrid chunk manager
+  log("Main", "Initializing hybrid chunk manager...");
+  await chunkManager.initialize();
+
   // Initialize worker pool
   const numWorkers = navigator.hardwareConcurrency || 4;
   log("Main", `Initializing ${numWorkers} workers...`);
@@ -139,8 +144,8 @@ async function main() {
       const key = getChunkKey(position);
       // 'voxels' is now a Uint8Array view on the SharedArrayBuffer from the worker
       const sharedVoxelData = voxels as Uint8Array; // Type assertion for clarity
-      // voxelData.set(voxels); // This line is no longer needed
-      loadedChunkData.set(key, sharedVoxelData);
+      // Save to hybrid chunk manager (both cache and storage)
+      chunkManager.setChunk(position, sharedVoxelData);
       requestedChunkKeys.add(key);
     } else if (type === "chunkMeshUpdated") {
       if (!rendererState) throw new Error("Renderer not found");
@@ -237,15 +242,16 @@ async function main() {
       const blockChunk = getChunkOfPosition(block);
       const chunkKey = getChunkKey(blockChunk);
 
-      // Check if chunk is loaded
-      const chunkData = loadedChunkData.get(chunkKey);
-      if (!chunkData) continue;
+      // Check if chunk is loaded (only from cache for performance)
+      const key = getChunkKey(blockChunk);
+      const cached = chunkManager.cache?.get(key);
+      if (!cached) continue;
 
       // Get local coordinates within chunk
       const localPosition = getLocalPosition(block);
 
       // Get voxel index
-      const chunk = new Chunk(blockChunk, chunkData);
+      const chunk = new Chunk(blockChunk, cached.data);
 
       // Check if block exists (non-zero)
       if (chunk.getVoxel(localPosition) !== VoxelType.AIR) {
@@ -324,14 +330,15 @@ async function main() {
     return null;
   };
 
-  const physicsStep = (deltaTimeMs: number) => {
+  const physicsStep = async (deltaTimeMs: number) => {
     // --- Physics Update ---
+    // Note: updatePhysics is now synchronous, async operations are handled separately
     updatePhysics(
       playerState,
       keyboardState,
       cameraYaw,
       deltaTimeMs,
-      loadedChunkData
+      chunkManager
     );
 
     if (keyboardState.pressedKeys.has("KeyC")) {
@@ -339,6 +346,11 @@ async function main() {
     }
     if (keyboardState.pressedKeys.has("KeyV")) {
       debugMode = !debugMode;
+    }
+    if (keyboardState.pressedKeys.has("KeyB")) {
+      // Show chunk storage stats
+      const stats = await chunkManager.getStats();
+      log("Main", "Chunk Storage Stats:", stats);
     }
     if (keyboardState.downKeys.has("KeyH")) {
       fov += 0.01;
@@ -363,46 +375,48 @@ async function main() {
     }
     if (keyboardState.mouseDown && blockLookedAt) {
       const { block } = blockLookedAt;
-      const chunkData = loadedChunkData.get(
-        getChunkKey(getChunkOfPosition(block))
-      );
-      if (!chunkData) return;
-      const chunk = new Chunk(getChunkOfPosition(block), chunkData);
-      const localPosition = getLocalPosition(block);
-      chunk.setVoxel(localPosition, VoxelType.AIR);
-      chunkData.set(chunk.data);
+      // Handle block removal asynchronously to avoid blocking the game loop
+      (async () => {
+        const chunkData = await chunkManager.getChunk(getChunkOfPosition(block));
+        if (!chunkData) return;
+        const chunk = new Chunk(getChunkOfPosition(block), chunkData);
+        const localPosition = getLocalPosition(block);
+        chunk.setVoxel(localPosition, VoxelType.AIR);
+        chunkManager.setChunk(chunk.position, chunk.data);
 
-      workerManager.queueTask(
-        {
-          type: "renderChunk",
-          position: chunk.position,
-          data: chunk.data,
-        },
-        undefined,
-        true
-      );
+        workerManager.queueTask(
+          {
+            type: "renderChunk",
+            position: chunk.position,
+            data: chunk.data,
+          },
+          undefined,
+          true
+        );
+      })();
     } else if (keyboardState.mouseRightClicked && blockLookedAt) {
       const { block, face } = blockLookedAt;
       const newBlock = vec3.clone(block);
       vec3.add(newBlock, block, FACE_NORMALS[face]);
-      const localPosition = getLocalPosition(newBlock);
-      const chunkData = loadedChunkData.get(
-        getChunkKey(getChunkOfPosition(newBlock))
-      );
-      if (!chunkData) return;
-      const chunk = new Chunk(getChunkOfPosition(newBlock), chunkData);
-      chunk.setVoxel(localPosition, blockToPlace);
-      chunkData.set(chunk.data);
+      // Handle block placement asynchronously to avoid blocking the game loop
+      (async () => {
+        const localPosition = getLocalPosition(newBlock);
+        const chunkData = await chunkManager.getChunk(getChunkOfPosition(newBlock));
+        if (!chunkData) return;
+        const chunk = new Chunk(getChunkOfPosition(newBlock), chunkData);
+        chunk.setVoxel(localPosition, blockToPlace);
+        chunkManager.setChunk(chunk.position, chunk.data);
 
-      workerManager.queueTask(
-        {
-          type: "renderChunk",
-          position: chunk.position,
-          data: chunk.data,
-        },
-        undefined,
-        true
-      );
+        workerManager.queueTask(
+          {
+            type: "renderChunk",
+            position: chunk.position,
+            data: chunk.data,
+          },
+          undefined,
+          true
+        );
+      })();
     }
 
     keyboardState.pressedKeys.clear();
@@ -460,7 +474,8 @@ async function main() {
       const chunkInfo = rendererState.chunkManager.chunkGeometryInfo.get(key);
       if (chunkInfo) {
         rendererState.chunkManager.deleteChunk(chunkInfo.position);
-        loadedChunkData.delete(key);
+        // Note: We don't delete from chunkManager here as it handles its own cache
+        // The chunk data will be automatically evicted from cache when needed
         requestedChunkKeys.delete(key);
       }
     }
@@ -493,7 +508,6 @@ async function main() {
             );
             const key = getChunkKey(chunkPos);
             if (!requestedChunkKeys.has(key)) {
-              log("Chunk", `Requesting chunk: ${key}`);
               requestedChunkKeys.add(key);
               workerManager.queueTask({
                 type: "requestChunk",
@@ -518,7 +532,7 @@ async function main() {
 
   let debugCameraEnabled = false;
   let fov = Math.PI / 4;
-  let blockLookedAt: ReturnType<typeof getBlockLookedAt> | null = null;
+  let blockLookedAt: Awaited<ReturnType<typeof getBlockLookedAt>> | null = null;
   // --- Game Loop Function ---
   let lastTotalTriangles = 0;
   let lastFrameTime = performance.now();
@@ -624,14 +638,14 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
     // console.timeEnd("frame"); // End profiling the entire frame function
   }
 
-  const frameLoop = () => {
+  const frameLoop = async () => {
     const now = performance.now();
     const deltaTime = now - lastFrameTime;
     lastFrameTime = now;
 
     // Process physics and potentially queue more chunk updates via worker tasks
     const physicsStart = performance.now();
-    physicsStep(deltaTime);
+    await physicsStep(deltaTime);
     physicsTimeMs = performance.now() - physicsStart;
 
     // Render the frame (will only draw 'ready' chunks)
