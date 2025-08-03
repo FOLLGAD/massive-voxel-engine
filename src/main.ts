@@ -2,11 +2,9 @@
 /// <reference types="@webgpu/types" />
 
 import { vec3 } from "gl-matrix"; // Keep gl-matrix for look direction vector
-import { ENABLE_GREEDY_MESHING, LOAD_RADIUS_XZ, LOAD_RADIUS_Y } from "./config";
+import { ENABLE_GREEDY_MESHING } from "./config";
 import {
-  CHUNK_SIZE_X,
-  CHUNK_SIZE_Y,
-  CHUNK_SIZE_Z,
+  CHUNK_CONFIG,
   UNLOAD_BUFFER_XZ,
   UNLOAD_BUFFER_Y,
   PHYSICS_CACHE_RADIUS_XZ,
@@ -26,6 +24,7 @@ import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
 import { ChunkStorage } from './chunk-storage';
+
 let debugMode = false;
 log("Main", "Main script loaded.");
 
@@ -134,46 +133,21 @@ async function main() {
   await chunkStorage.ensureInitialized();
 
   // Function to request chunk data from workers when needed for physics
-  const requestChunkData = async (position: vec3): Promise<Uint8Array | null> => {
-    const key = getChunkKey(position);
+  const requestChunkData = async (posBatch: vec3[]) => {
+    const missingPos: vec3[] = [];
 
     // Check cache first
-    if (chunkDataCache.has(key)) {
-      return chunkDataCache.get(key)!;
+    for (const position of posBatch) {
+      const key = getChunkKey(position);
+      if (!chunkDataCache.has(key)) {
+        missingPos.push(vec3.clone(position));
+      }
     }
 
-    const storedData = await chunkStorage.loadChunk(position);
-    if (storedData) {
-      chunkDataCache.set(key, storedData);
-      return storedData;
+    const storedData = await chunkStorage.loadChunks(missingPos);
+    for (const [key, data] of storedData) {
+      chunkDataCache.set(key, data);
     }
-
-    // If not in storage, request from worker
-    return new Promise((resolve, reject) => {
-      const responseHandler = (event: MessageEvent) => {
-        if (event.data.type === "chunkDataAvailable" && getChunkKey(event.data.position) === key) {
-          const voxelData = new Uint8Array(event.data.voxels);
-          chunkDataCache.set(key, voxelData);
-          chunkStorage.saveChunk(position, voxelData);
-          resolve(voxelData);
-          workerManager.removeMessageHandler(responseHandler);
-        }
-      };
-
-      workerManager.addMessageHandler(responseHandler);
-
-      workerManager.queueTask({
-        type: "requestChunkData",
-        position,
-        data: null, // explicitly null because it's not in storage
-      });
-
-      // Add timeout
-      setTimeout(() => {
-        workerManager.removeMessageHandler(responseHandler);
-        reject(new Error(`Timeout requesting chunk data for ${key}`));
-      }, 5000);
-    })
   };
 
   let chunksToUnloadQueue: string[] = [];
@@ -185,8 +159,8 @@ async function main() {
     if (type === "chunkMeshUpdated") {
       const { position, vertices, indices, visibilityBits } = data;
       const aabb = createAABB(
-        vec3.fromValues(position[0] * CHUNK_SIZE_X, position[1] * CHUNK_SIZE_Y, position[2] * CHUNK_SIZE_Z),
-        vec3.fromValues((position[0] + 1) * CHUNK_SIZE_X, (position[1] + 1) * CHUNK_SIZE_Y, (position[2] + 1) * CHUNK_SIZE_Z)
+        vec3.fromValues(position[0] * CHUNK_CONFIG.size.x, position[1] * CHUNK_CONFIG.size.y, position[2] * CHUNK_CONFIG.size.z),
+        vec3.fromValues((position[0] + 1) * CHUNK_CONFIG.size.x, (position[1] + 1) * CHUNK_CONFIG.size.y, (position[2] + 1) * CHUNK_CONFIG.size.z)
       );
       renderer.chunkManager.updateChunkGeometryInfo(
         position,
@@ -309,14 +283,22 @@ async function main() {
   };
 
   const physicsStep = async (deltaTimeMs: number) => {
+    const chunksToLoad = new Set<vec3>();
+    const chunkLoadFn = (position: vec3) => {
+      if (!chunksToLoad.has(position)) {
+        chunksToLoad.add(position);
+      }
+    };
     updatePhysics(
       playerState,
       keyboardState,
       cameraYaw,
       deltaTimeMs,
       chunkDataCache,
-      requestChunkData
+      chunkLoadFn
     );
+
+    requestChunkData(Array.from(chunksToLoad));
 
     if (keyboardState.pressedKeys.has("KeyC")) {
       debugCameraEnabled = !debugCameraEnabled;
@@ -343,54 +325,68 @@ async function main() {
       }
       updateToolbar();
     }
+    if (keyboardState.pressedKeys.has("KeyJ")) {
+      CHUNK_CONFIG.loadRadius.xz -= 1;
+      CHUNK_CONFIG.loadRadius.y -= 1;
+    }
+    if (keyboardState.pressedKeys.has("KeyK")) {
+      CHUNK_CONFIG.loadRadius.xz += 1;
+      CHUNK_CONFIG.loadRadius.y += 1;
+    }
+
     if (keyboardState.mouseDown && blockLookedAt) {
       const { block } = blockLookedAt;
       const chunkPosition = getChunkOfPosition(block);
-      const chunkData = await requestChunkData(chunkPosition);
-      if (!chunkData) return;
-      const chunk = new Chunk(chunkPosition, chunkData);
-      const localPosition = getLocalPosition(block);
-      chunk.setVoxel(localPosition, VoxelType.AIR);
+      requestChunkData([chunkPosition]);
+      const chunkData = chunkDataCache.get(getChunkKey(chunkPosition));
 
-      const mainThreadData = chunk.data.slice();
-      chunkDataCache.set(getChunkKey(chunkPosition), mainThreadData);
-      chunkStorage.saveChunk(chunkPosition, mainThreadData, true);
+      if (chunkData) {
+        const chunk = new Chunk(chunkPosition, chunkData);
+        const localPosition = getLocalPosition(block);
+        chunk.setVoxel(localPosition, VoxelType.AIR);
 
-      const workerData = mainThreadData.slice();
-      workerManager.queueTask(
-        {
-          type: "renderChunk",
-          position: chunk.position,
-          data: workerData.buffer,
-        },
-        [workerData.buffer],
-        true
-      );
+        const mainThreadData = chunk.data.slice();
+        chunkDataCache.set(getChunkKey(chunkPosition), mainThreadData);
+        chunkStorage.saveChunk(chunkPosition, mainThreadData, true);
+
+        const workerData = mainThreadData.slice();
+        workerManager.queueTask(
+          {
+            type: "renderChunk",
+            position: chunk.position,
+            data: workerData.buffer,
+          },
+          [workerData.buffer],
+          true
+        );
+      }
     } else if (keyboardState.mouseRightClicked && blockLookedAt) {
       const { block, face } = blockLookedAt;
       const newBlock = vec3.clone(block);
       vec3.add(newBlock, block, FACE_NORMALS[face]);
       const chunkPosition = getChunkOfPosition(newBlock);
-      const chunkData = await requestChunkData(chunkPosition);
-      if (!chunkData) return;
-      const chunk = new Chunk(chunkPosition, chunkData);
-      const localPosition = getLocalPosition(newBlock);
-      chunk.setVoxel(localPosition, blockToPlace);
+      requestChunkData([chunkPosition]);
+      const chunkData = chunkDataCache.get(getChunkKey(chunkPosition));
+      if (chunkData) {
+        const chunk = new Chunk(chunkPosition, chunkData);
+        const localPosition = getLocalPosition(newBlock);
+        chunk.setVoxel(localPosition, blockToPlace);
 
-      const mainThreadData = chunk.data.slice();
-      chunkDataCache.set(getChunkKey(chunkPosition), mainThreadData);
-      chunkStorage.saveChunk(chunkPosition, mainThreadData, true);
+        const mainThreadData = chunk.data.slice();
+        chunkDataCache.set(getChunkKey(chunkPosition), mainThreadData);
+        chunkStorage.saveChunk(chunkPosition, mainThreadData, true);
 
-      const workerData = mainThreadData.slice();
-      workerManager.queueTask(
-        {
-          type: "renderChunk",
-          position: chunk.position,
-          data: workerData.buffer,
-        },
-        [workerData.buffer],
-        true
-      );
+        const workerData = mainThreadData.slice();
+        workerManager.queueTask(
+          {
+            type: "renderChunk",
+            position: chunk.position,
+            data: workerData.buffer,
+          },
+          [workerData.buffer],
+          true
+        );
+      }
     }
 
     keyboardState.pressedKeys.clear();
@@ -413,18 +409,34 @@ async function main() {
           type: "unloadChunks",
           allChunkKeys,
           playerPosition: playerChunk,
-          loadRadiusXZ: LOAD_RADIUS_XZ,
-          loadRadiusY: LOAD_RADIUS_Y,
+          loadRadiusXZ: CHUNK_CONFIG.loadRadius.xz,
+          loadRadiusY: CHUNK_CONFIG.loadRadius.y,
           unloadBufferXZ: UNLOAD_BUFFER_XZ,
           unloadBufferY: UNLOAD_BUFFER_Y
-        });
+        }, undefined, true);
+      }
+
+      for (const chunkKey of allChunkKeys) {
+        const [x, y, z] = chunkKey.split(',').map(Number);
+        const chunkPos = vec3.fromValues(x, y, z);
+
+        const dx = Math.abs(chunkPos[0] - playerChunk[0]);
+        const dy = Math.abs(chunkPos[1] - playerChunk[1]);
+        const dz = Math.abs(chunkPos[2] - playerChunk[2]);
+
+        if (dx > CHUNK_CONFIG.loadRadius.xz + UNLOAD_BUFFER_XZ || dy > CHUNK_CONFIG.loadRadius.y + UNLOAD_BUFFER_Y || dz > CHUNK_CONFIG.loadRadius.xz + UNLOAD_BUFFER_XZ) {
+          chunksToUnloadQueue.push(chunkKey);
+        }
       }
     }
-    setTimeout(() => requestIdleCallback(() => unloadChunks(), { timeout: 2500 }), 100);
+
+    setTimeout(() => requestIdleCallback(() => unloadChunks(), { timeout: 100 }), 100);
   };
 
   const processUnloadQueue = () => {
-    const chunksThisFrame = chunksToUnloadQueue.splice(0, 500);
+    const chunksThisFrame = chunksToUnloadQueue;
+    chunksToUnloadQueue = [];
+
     for (const key of chunksThisFrame) {
       const chunkInfo = renderer.chunkManager.chunkGeometryInfo.get(key);
       if (chunkInfo) {
@@ -454,20 +466,29 @@ async function main() {
       lastHandledChunkPosition = vec3.clone(currentChunk);
 
       const positionsToLoad: vec3[] = [];
-      for (let yOffset = -LOAD_RADIUS_Y; yOffset <= LOAD_RADIUS_Y; yOffset++) {
-        for (let zOffset = -LOAD_RADIUS_XZ; zOffset <= LOAD_RADIUS_XZ; zOffset++) {
-          for (let xOffset = -LOAD_RADIUS_XZ; xOffset <= LOAD_RADIUS_XZ; xOffset++) {
-            const chunkPos = vec3.fromValues(
-              currentChunk[0] + xOffset,
-              currentChunk[1] + yOffset,
-              currentChunk[2] + zOffset
-            );
-            const key = getChunkKey(chunkPos);
-            if (!requestedChunkKeys.has(key)) {
-              requestedChunkKeys.add(key);
-              positionsToLoad.push(chunkPos);
-            }
+      // Collect all possible chunk positions with their distance to center, then sort by distance (onion order)
+      const offsets: { x: number, y: number, z: number, dist: number }[] = [];
+      for (let yOffset = -CHUNK_CONFIG.loadRadius.y; yOffset <= CHUNK_CONFIG.loadRadius.y; yOffset++) {
+        for (let zOffset = -CHUNK_CONFIG.loadRadius.xz; zOffset <= CHUNK_CONFIG.loadRadius.xz; zOffset++) {
+          for (let xOffset = -CHUNK_CONFIG.loadRadius.xz; xOffset <= CHUNK_CONFIG.loadRadius.xz; xOffset++) {
+            const dist = Math.abs(xOffset) + Math.abs(yOffset) + Math.abs(zOffset);
+            offsets.push({ x: xOffset, y: yOffset, z: zOffset, dist });
           }
+        }
+      }
+      // Sort by distance to center (onion layers)
+      offsets.sort((a, b) => a.dist - b.dist);
+
+      for (const { x: xOffset, y: yOffset, z: zOffset } of offsets) {
+        const chunkPos = vec3.fromValues(
+          currentChunk[0] + xOffset,
+          currentChunk[1] + yOffset,
+          currentChunk[2] + zOffset
+        );
+        const key = getChunkKey(chunkPos);
+        if (!requestedChunkKeys.has(key)) {
+          requestedChunkKeys.add(key);
+          positionsToLoad.push(chunkPos);
         }
       }
 
@@ -574,6 +595,7 @@ Render: ${renderTimeMs.toFixed(2)} ms
 LookAt: ${lookAtTimeMs.toFixed(2)} ms
 Mesh:   ${ENABLE_GREEDY_MESHING ? "Greedy" : "Naive"}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
+Chunks: ${CHUNK_CONFIG.loadRadius.xz}x${CHUNK_CONFIG.loadRadius.y}
       `.trim();
     }
   }

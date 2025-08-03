@@ -1,6 +1,6 @@
 import { vec3 } from "gl-matrix";
 import { Chunk } from "./chunk";
-import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./config";
+import { CHUNK_CONFIG } from "./config";
 import { VoxelType } from "./common/voxel-types";
 import log from "./logger";
 import { mkSimplexNoise, mulberry32, type SimplexNoise } from "./noise";
@@ -167,13 +167,13 @@ export class Terrain {
     } = config;
 
     // Calculate world offset for noise input
-    const worldOffsetX = chunk.position[0] * CHUNK_SIZE_X;
-    const worldOffsetZ = chunk.position[2] * CHUNK_SIZE_Z;
+    const worldOffsetX = chunk.position[0] * CHUNK_CONFIG.size.x;
+    const worldOffsetZ = chunk.position[2] * CHUNK_CONFIG.size.z;
 
     let isOnlyAir = true;
 
-    for (let x = 0; x < CHUNK_SIZE_X; x++) {
-      for (let z = 0; z < CHUNK_SIZE_Z; z++) {
+    for (let x = 0; x < CHUNK_CONFIG.size.x; x++) {
+      for (let z = 0; z < CHUNK_CONFIG.size.z; z++) {
         // Calculate world coordinates for noise input
         const worldX = worldOffsetX + x;
         const worldZ = worldOffsetZ + z;
@@ -199,9 +199,9 @@ export class Terrain {
         const height = Math.floor(baseHeight + heightVariation);
         // --- End Height Calculation ---
 
-        const chunkBaseY = chunk.position[1] * CHUNK_SIZE_Y;
+        const chunkBaseY = chunk.position[1] * CHUNK_CONFIG.size.y;
 
-        for (let y = 0; y < CHUNK_SIZE_Y; y++) {
+        for (let y = 0; y < CHUNK_CONFIG.size.y; y++) {
           const worldY = chunkBaseY + y; // Voxel's world Y position
 
           let voxelType = VoxelType.AIR;
@@ -239,8 +239,6 @@ export class Terrain {
         }
       }
     }
-
-    chunk.metadata.isOnlyAir = isOnlyAir;
 
     return chunk;
   }

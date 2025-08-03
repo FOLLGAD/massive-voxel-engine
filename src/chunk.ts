@@ -1,9 +1,6 @@
 import { vec3 } from "gl-matrix";
 import {
-  CHUNK_SIZE_X,
-  CHUNK_SIZE_Y,
-  CHUNK_SIZE_Z,
-  CHUNK_VOLUME,
+  CHUNK_CONFIG,
 } from "./config";
 import { VoxelType } from "./common/voxel-types";
 import { getVoxelColor, isVoxelSolid } from "./common/voxel-types";
@@ -12,17 +9,17 @@ import log from "./logger";
 import type { AABB } from "./aabb";
 
 export const getLocalPosition = (position: vec3) => {
-  const x = ((position[0] % CHUNK_SIZE_X) + CHUNK_SIZE_X) % CHUNK_SIZE_X;
-  const y = ((position[1] % CHUNK_SIZE_Y) + CHUNK_SIZE_Y) % CHUNK_SIZE_Y;
-  const z = ((position[2] % CHUNK_SIZE_Z) + CHUNK_SIZE_Z) % CHUNK_SIZE_Z;
+  const x = ((position[0] % CHUNK_CONFIG.size.x) + CHUNK_CONFIG.size.x) % CHUNK_CONFIG.size.x;
+  const y = ((position[1] % CHUNK_CONFIG.size.y) + CHUNK_CONFIG.size.y) % CHUNK_CONFIG.size.y;
+  const z = ((position[2] % CHUNK_CONFIG.size.z) + CHUNK_CONFIG.size.z) % CHUNK_CONFIG.size.z;
   return vec3.fromValues(x, y, z);
 };
 
 export const getChunkOfPosition = (position: vec3) => {
   return vec3.fromValues(
-    Math.floor(position[0] / CHUNK_SIZE_X),
-    Math.floor(position[1] / CHUNK_SIZE_Y),
-    Math.floor(position[2] / CHUNK_SIZE_Z)
+    Math.floor(position[0] / CHUNK_CONFIG.size.x),
+    Math.floor(position[1] / CHUNK_CONFIG.size.y),
+    Math.floor(position[2] / CHUNK_CONFIG.size.z)
   );
 };
 
@@ -72,8 +69,8 @@ const FACE_NORMALS: { [key: string]: [number, number, number] } = {
 const getVoxelIndex = (localPos: vec3): number => {
   return (
     localPos[0] +
-    localPos[1] * CHUNK_SIZE_X +
-    localPos[2] * CHUNK_SIZE_X * CHUNK_SIZE_Y
+    localPos[1] * CHUNK_CONFIG.size.x +
+    localPos[2] * CHUNK_CONFIG.size.x * CHUNK_CONFIG.size.y
   );
 };
 
@@ -92,15 +89,15 @@ const NUM_FACES = 6;
 const isOnFace = (pos: vec3, faceIndex: number): boolean => {
   switch (faceIndex) {
     case FACE_X_PLUS:
-      return pos[0] === CHUNK_SIZE_X - 1;
+      return pos[0] === CHUNK_CONFIG.size.x - 1;
     case FACE_X_MINUS:
       return pos[0] === 0;
     case FACE_Y_PLUS:
-      return pos[1] === CHUNK_SIZE_Y - 1;
+      return pos[1] === CHUNK_CONFIG.size.y - 1;
     case FACE_Y_MINUS:
       return pos[1] === 0;
     case FACE_Z_PLUS:
-      return pos[2] === CHUNK_SIZE_Z - 1;
+      return pos[2] === CHUNK_CONFIG.size.z - 1;
     case FACE_Z_MINUS:
       return pos[2] === 0;
     default:
@@ -143,7 +140,7 @@ const findConnectedFaces = (
   let head = 0;
   while (head < queue.length) {
     // Using queue as FIFO, check size limit if necessary
-    if (queue.length > CHUNK_VOLUME * 2) {
+    if (queue.length > CHUNK_CONFIG.volume * 2) {
       log.error("Chunk", "Flood fill queue grew too large, aborting.");
       // Return what we found so far, might be incomplete but avoids infinite loops
       return componentFacesMask;
@@ -165,11 +162,11 @@ const findConnectedFaces = (
       // Check bounds
       if (
         neighborPos[0] < 0 ||
-        neighborPos[0] >= CHUNK_SIZE_X ||
+        neighborPos[0] >= CHUNK_CONFIG.size.x ||
         neighborPos[1] < 0 ||
-        neighborPos[1] >= CHUNK_SIZE_Y ||
+        neighborPos[1] >= CHUNK_CONFIG.size.y ||
         neighborPos[2] < 0 ||
-        neighborPos[2] >= CHUNK_SIZE_Z
+        neighborPos[2] >= CHUNK_CONFIG.size.z
       ) {
         continue;
       }
@@ -212,7 +209,7 @@ export class Chunk {
 
   constructor(position: vec3, data?: Uint8Array) {
     this.position = position;
-    this.data = data ?? new Uint8Array(CHUNK_VOLUME);
+    this.data = data ?? new Uint8Array(CHUNK_CONFIG.volume);
   }
 
   static withData(position: vec3, data: Uint8Array): Chunk {
@@ -224,17 +221,17 @@ export class Chunk {
     const index = getVoxelIndex(localPos);
     if (
       localPos[0] < 0 ||
-      localPos[0] >= CHUNK_SIZE_X ||
+      localPos[0] >= CHUNK_CONFIG.size.x ||
       localPos[1] < 0 ||
-      localPos[1] >= CHUNK_SIZE_Y ||
+      localPos[1] >= CHUNK_CONFIG.size.y ||
       localPos[2] < 0 ||
-      localPos[2] >= CHUNK_SIZE_Z
+        localPos[2] >= CHUNK_CONFIG.size.z
     ) {
       log.warn(
         "Chunk",
         `Calculated index ${index} out of bounds for chunk ${getChunkKey(
           this.position
-        )} (size ${CHUNK_VOLUME})`
+        )} (size ${CHUNK_CONFIG.volume})`
       );
       return VoxelType.AIR;
     }
@@ -245,11 +242,11 @@ export class Chunk {
   setVoxel(localPos: vec3, type: VoxelType): void {
     if (
       localPos[0] < 0 ||
-      localPos[0] >= CHUNK_SIZE_X ||
+      localPos[0] >= CHUNK_CONFIG.size.x ||
       localPos[1] < 0 ||
-      localPos[1] >= CHUNK_SIZE_Y ||
+      localPos[1] >= CHUNK_CONFIG.size.y ||
       localPos[2] < 0 ||
-      localPos[2] >= CHUNK_SIZE_Z
+      localPos[2] >= CHUNK_CONFIG.size.z
     ) {
       return;
     }
@@ -267,13 +264,13 @@ export class Chunk {
     let baseVertexIndexOffset = 0;
 
     // Calculate world offset for this chunk
-    const offsetX = this.position[0] * CHUNK_SIZE_X;
-    const offsetY = this.position[1] * CHUNK_SIZE_Y;
-    const offsetZ = this.position[2] * CHUNK_SIZE_Z;
+    const offsetX = this.position[0] * CHUNK_CONFIG.size.x;
+    const offsetY = this.position[1] * CHUNK_CONFIG.size.y;
+    const offsetZ = this.position[2] * CHUNK_CONFIG.size.z;
 
-    for (let z = 0; z < CHUNK_SIZE_Z; z++) {
-      for (let y = 0; y < CHUNK_SIZE_Y; y++) {
-        for (let x = 0; x < CHUNK_SIZE_X; x++) {
+    for (let z = 0; z < CHUNK_CONFIG.size.z; z++) {
+      for (let y = 0; y < CHUNK_CONFIG.size.y; y++) {
+        for (let x = 0; x < CHUNK_CONFIG.size.x; x++) {
           const localPos = vec3.fromValues(x, y, z);
           const voxelType = this.getVoxel(localPos);
           if (!isVoxelSolid(voxelType)) {
@@ -344,12 +341,12 @@ export class Chunk {
     const vertices: number[] = []; // Format: [x, y, z, r, g, b, nx, ny, nz, ...]
     const indices: number[] = [];
     let baseVertexIndexOffset = 0;
-    const dims = [CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z];
+    const dims = [CHUNK_CONFIG.size.x, CHUNK_CONFIG.size.y, CHUNK_CONFIG.size.z];
 
     // Calculate world offset for this chunk
-    const offsetX = this.position[0] * CHUNK_SIZE_X;
-    const offsetY = this.position[1] * CHUNK_SIZE_Y;
-    const offsetZ = this.position[2] * CHUNK_SIZE_Z;
+    const offsetX = this.position[0] * CHUNK_CONFIG.size.x;
+    const offsetY = this.position[1] * CHUNK_CONFIG.size.y;
+    const offsetZ = this.position[2] * CHUNK_CONFIG.size.z;
 
     // Sweep over the 3 dimensions (X, Y, Z)
     for (let dimension = 0; dimension < 3; dimension++) {
@@ -542,12 +539,12 @@ export class Chunk {
   // Calculates a 15-bit integer where each bit indicates if two distinct faces
   // are connected by a path of air voxels within the chunk.
   generateVisibilityMatrix(): number {
-    const visitedArr = new Array(CHUNK_VOLUME).fill(false);
+    const visitedArr = new Array(CHUNK_CONFIG.volume).fill(false);
     let conjoinedSides = 0; // 15-bit result
 
-    for (let z = 0; z < CHUNK_SIZE_Z; z++) {
-      for (let y = 0; y < CHUNK_SIZE_Y; y++) {
-        for (let x = 0; x < CHUNK_SIZE_X; x++) {
+    for (let z = 0; z < CHUNK_CONFIG.size.z; z++) {
+      for (let y = 0; y < CHUNK_CONFIG.size.y; y++) {
+        for (let x = 0; x < CHUNK_CONFIG.size.x; x++) {
           const pos = vec3.fromValues(x, y, z);
           const index = getVoxelIndex(pos);
 

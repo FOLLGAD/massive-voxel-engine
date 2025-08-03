@@ -1,7 +1,6 @@
 import { vec3 } from "gl-matrix";
 import { PLAYER_HALF_WIDTH } from "./physics";
 import { PLAYER_HEIGHT } from "./physics";
-import type { AABB } from "./aabb";
 
 export type AABB = {
   min: vec3;
@@ -38,7 +37,9 @@ export function getPlayerAABB(cameraPos: vec3): { min: vec3; max: vec3 } {
       cameraPos[2] + PLAYER_HALF_WIDTH
     ),
   };
-}export function expandAABB(aabb: AABB, x: number, y: number, z: number): AABB {
+}
+
+export function expandAABB(aabb: AABB, x: number, y: number, z: number): AABB {
   const newMin = vec3.clone(aabb.min);
   const newMax = vec3.clone(aabb.max);
   if (x < 0) newMin[0] += x;

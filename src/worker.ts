@@ -118,6 +118,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   } else {
     log.warn("Worker", `Unknown message type received: ${type}`);
+    console.error("Unknown message type received", type);
   }
 };
 

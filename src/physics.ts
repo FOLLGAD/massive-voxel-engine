@@ -1,5 +1,5 @@
 import { vec3 } from "gl-matrix";
-import { CHUNK_SIZE_X, CHUNK_SIZE_Y, CHUNK_SIZE_Z } from "./config";
+import { CHUNK_CONFIG } from "./config";
 import log from "./logger";
 import { Chunk, getChunkKey, getChunkOfPosition } from "./chunk";
 import { FLYING_SPEED } from "./config";
@@ -92,13 +92,13 @@ function getVoxelAt(
   // Try to get from cache first (synchronous)
   const key = getChunkKey(chunkPosition);
   const cached = chunkDataCache.get(key);
-  
+
   if (cached) {
     const chunk = new Chunk(chunkPosition, cached);
     const localPos = vec3.fromValues(
-      Math.floor(position[0]) - chunk.position[0] * CHUNK_SIZE_X,
-      Math.floor(position[1]) - chunk.position[1] * CHUNK_SIZE_Y,
-      Math.floor(position[2]) - chunk.position[2] * CHUNK_SIZE_Z
+      Math.floor(position[0]) - chunk.position[0] * CHUNK_CONFIG.size.x,
+      Math.floor(position[1]) - chunk.position[1] * CHUNK_CONFIG.size.y,
+      Math.floor(position[2]) - chunk.position[2] * CHUNK_CONFIG.size.z
     );
     return chunk.getVoxel(localPos);
   }
@@ -290,28 +290,28 @@ function checkCriticalChunksLoaded(
   aabb: AABB,
   chunkDataCache: Map<string, Uint8Array>
 ): boolean {
-  const minChunkX = Math.floor(aabb.min[0] / CHUNK_SIZE_X);
-  const maxChunkX = Math.floor(aabb.max[0] / CHUNK_SIZE_X);
-  const minChunkY = Math.floor(aabb.min[1] / CHUNK_SIZE_Y);
-  const maxChunkY = Math.floor(aabb.max[1] / CHUNK_SIZE_Y);
-  const minChunkZ = Math.floor(aabb.min[2] / CHUNK_SIZE_Z);
-  const maxChunkZ = Math.floor(aabb.max[2] / CHUNK_SIZE_Z);
-  
+  const minChunkX = Math.floor(aabb.min[0] / CHUNK_CONFIG.size.x);
+  const maxChunkX = Math.floor(aabb.max[0] / CHUNK_CONFIG.size.x);
+  const minChunkY = Math.floor(aabb.min[1] / CHUNK_CONFIG.size.y);
+  const maxChunkY = Math.floor(aabb.max[1] / CHUNK_CONFIG.size.y);
+  const minChunkZ = Math.floor(aabb.min[2] / CHUNK_CONFIG.size.z);
+  const maxChunkZ = Math.floor(aabb.max[2] / CHUNK_CONFIG.size.z);
+
   const missingChunks: string[] = [];
-  
+
   for (let y = minChunkY; y <= maxChunkY; y++) {
     for (let z = minChunkZ; z <= maxChunkZ; z++) {
       for (let x = minChunkX; x <= maxChunkX; x++) {
         const chunkPos = vec3.fromValues(x, y, z);
         const key = getChunkKey(chunkPos);
-        
+
         if (!chunkDataCache.has(key)) {
           missingChunks.push(key);
         }
       }
     }
   }
-  
+
   if (missingChunks.length > 0) {
     // Only log occasionally to avoid spam
     if (Math.random() < 0.01) { // 1% chance to log
@@ -319,7 +319,7 @@ function checkCriticalChunksLoaded(
     }
     return false; // Critical chunks not loaded
   }
-  
+
   return true; // All critical chunks loaded
 }
 
@@ -332,35 +332,32 @@ function checkCriticalChunksLoaded(
 function requestPhysicsChunks(
   playerPosition: vec3,
   chunkDataCache: Map<string, Uint8Array>,
-  requestChunkData: (position: vec3) => Promise<Uint8Array | null>
+  requestChunkData: (position: vec3) => void
 ): void {
   // Calculate the area around the player that needs to be loaded for physics
   const playerAABB = getPlayerAABB(playerPosition);
-  const expandedAABB = expandAABB(playerAABB, 2, 2, 2); // Add some buffer
-  
+  const expandedAABB = expandAABB(
+    expandAABB(playerAABB, CHUNK_CONFIG.size.x, CHUNK_CONFIG.size.y, CHUNK_CONFIG.size.z),
+    -CHUNK_CONFIG.size.x, -CHUNK_CONFIG.size.y, -CHUNK_CONFIG.size.z); // Add some buffer
+
   // Get all chunk positions that intersect with the expanded AABB
-  const minChunkX = Math.floor(expandedAABB.min[0] / CHUNK_SIZE_X);
-  const maxChunkX = Math.floor(expandedAABB.max[0] / CHUNK_SIZE_X);
-  const minChunkY = Math.floor(expandedAABB.min[1] / CHUNK_SIZE_Y);
-  const maxChunkY = Math.floor(expandedAABB.max[1] / CHUNK_SIZE_Y);
-  const minChunkZ = Math.floor(expandedAABB.min[2] / CHUNK_SIZE_Z);
-  const maxChunkZ = Math.floor(expandedAABB.max[2] / CHUNK_SIZE_Z);
-  
+  const minChunkX = Math.floor(expandedAABB.min[0] / CHUNK_CONFIG.size.x);
+  const maxChunkX = Math.floor(expandedAABB.max[0] / CHUNK_CONFIG.size.x);
+  const minChunkY = Math.floor(expandedAABB.min[1] / CHUNK_CONFIG.size.y);
+  const maxChunkY = Math.floor(expandedAABB.max[1] / CHUNK_CONFIG.size.y);
+  const minChunkZ = Math.floor(expandedAABB.min[2] / CHUNK_CONFIG.size.z);
+  const maxChunkZ = Math.floor(expandedAABB.max[2] / CHUNK_CONFIG.size.z);
+
   // Request chunks that are not already in cache
   for (let y = minChunkY; y <= maxChunkY; y++) {
     for (let z = minChunkZ; z <= maxChunkZ; z++) {
       for (let x = minChunkX; x <= maxChunkX; x++) {
         const chunkPos = vec3.fromValues(x, y, z);
         const key = getChunkKey(chunkPos);
-        
+
         // Only request if not already in cache
         if (!chunkDataCache.has(key)) {
-          requestChunkData(chunkPos).catch(error => {
-            // Silently handle errors to avoid spamming console
-            if (Math.random() < 0.01) { // 1% chance to log
-              log("Physics", `Failed to request chunk data for ${key}:`, error);
-            }
-          });
+          requestChunkData(chunkPos);
         }
       }
     }
@@ -374,7 +371,7 @@ export function updatePhysics(
   cameraYaw: number, // Needed for movement direction
   deltaTimeMs: number,
   chunkDataCache: Map<string, Uint8Array>, // Pass chunk data cache
-  requestChunkData: (position: vec3) => Promise<Uint8Array | null> // Function to request chunk data
+  requestChunkData: (position: vec3) => void // Function to request chunk data
 ): PlayerState {
   const { position, velocity } = playerState;
 
@@ -384,12 +381,12 @@ export function updatePhysics(
 
   // Request chunks needed for physics (this triggers the worker-based chunk data system)
   requestPhysicsChunks(position, chunkDataCache, requestChunkData);
-  
+
   // Check if critical chunks for physics are loaded (only immediate area)
   const playerAABB = getPlayerAABB(position);
   const expandedAABB = expandAABB(playerAABB, 0.5, 0.5, 0.5); // Smaller area
   const criticalChunksLoaded = checkCriticalChunksLoaded(expandedAABB, chunkDataCache);
-  
+
   // If critical chunks aren't loaded, allow basic physics but limit movement
   if (!criticalChunksLoaded) {
     // Allow gravity and basic physics, but block horizontal movement

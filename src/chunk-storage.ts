@@ -1,6 +1,6 @@
 import { vec3 } from "gl-matrix";
 import { getChunkKey } from "./chunk";
-import { CHUNK_VOLUME } from "./config";
+import { CHUNK_CONFIG } from "./config";
 import log from "./logger";
 
 export interface ChunkStorageStats {
@@ -277,8 +277,8 @@ export class ChunkStorage {
             request.onsuccess = () => {
                 const totalChunks = request.result;
                 // Estimate size based on average chunk size (CHUNK_VOLUME bytes)
-                const estimatedTotalSizeBytes = totalChunks * CHUNK_VOLUME;
-                const averageChunkSizeBytes = CHUNK_VOLUME;
+                const estimatedTotalSizeBytes = totalChunks * CHUNK_CONFIG.volume;
+                const averageChunkSizeBytes = CHUNK_CONFIG.volume;
 
                 const stats: ChunkStorageStats = {
                     totalChunks,

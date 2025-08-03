@@ -2,13 +2,20 @@ export const ENABLE_GREEDY_MESHING = true;
 export const FLYING_SPEED = 100;
 export const PHYSICS_FPS = 30;
 
-export const LOAD_RADIUS_Y = 12;
-export const LOAD_RADIUS_XZ = 16;
-
-export const CHUNK_SIZE_X = 32;
-export const CHUNK_SIZE_Y = 32;
-export const CHUNK_SIZE_Z = 32;
-export const CHUNK_VOLUME = CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z;
+export const CHUNK_CONFIG = {
+    loadRadius: {
+        xz: 8,
+        y: 8
+    },
+    size: {
+        x: 32,
+        y: 32,
+        z: 32
+    },
+    get volume(): number {
+        return this.size.x * this.size.y * this.size.z;
+    }
+}
 
 export const UNLOAD_BUFFER_XZ = 4;
 export const UNLOAD_BUFFER_Y = 1;
