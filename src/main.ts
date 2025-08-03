@@ -42,8 +42,8 @@ const FACE_NORMALS = {
 const requestedChunkKeys = new Set<string>();
 const chunkDataCache = new Map<string, Uint8Array>(); // Simple cache for chunk data needed by physics
 const playerState = new PlayerState();
-let renderer: Renderer; 
-let chunksReceived = 0; 
+let renderer: Renderer;
+let chunksReceived = 0;
 let chunkStorage: ChunkStorage;
 
 // --- Camera/Input State ---
@@ -132,71 +132,71 @@ async function main() {
   const workerManager = new WorkerManager(numWorkers);
   chunkStorage = new ChunkStorage();
   await chunkStorage.ensureInitialized();
-  
+
   // Function to request chunk data from workers when needed for physics
   const requestChunkData = async (position: vec3): Promise<Uint8Array | null> => {
-      const key = getChunkKey(position);
+    const key = getChunkKey(position);
 
-      // Check cache first
-      if (chunkDataCache.has(key)) {
-        return chunkDataCache.get(key)!;
-      }
-      
-      const storedData = await chunkStorage.loadChunk(position);
-      if(storedData) {
-          chunkDataCache.set(key, storedData);
-          return storedData;
-      }
+    // Check cache first
+    if (chunkDataCache.has(key)) {
+      return chunkDataCache.get(key)!;
+    }
 
-      // If not in storage, request from worker
-      return new Promise((resolve, reject) => {
-          const responseHandler = (event: MessageEvent) => {
-            if (event.data.type === "chunkDataAvailable" && getChunkKey(event.data.position) === key) {
-              const voxelData = new Uint8Array(event.data.voxels);
-              chunkDataCache.set(key, voxelData);
-              chunkStorage.saveChunk(position, voxelData);
-              resolve(voxelData);
-              workerManager.removeMessageHandler(responseHandler);
-            }
-          };
-    
-          workerManager.addMessageHandler(responseHandler);
-    
-          workerManager.queueTask({
-            type: "requestChunkData",
-            position,
-            data: null // explicitly null because it's not in storage
-          });
-    
-          // Add timeout
-          setTimeout(() => {
-            workerManager.removeMessageHandler(responseHandler);
-            reject(new Error(`Timeout requesting chunk data for ${key}`));
-          }, 5000);
-      })
+    const storedData = await chunkStorage.loadChunk(position);
+    if (storedData) {
+      chunkDataCache.set(key, storedData);
+      return storedData;
+    }
+
+    // If not in storage, request from worker
+    return new Promise((resolve, reject) => {
+      const responseHandler = (event: MessageEvent) => {
+        if (event.data.type === "chunkDataAvailable" && getChunkKey(event.data.position) === key) {
+          const voxelData = new Uint8Array(event.data.voxels);
+          chunkDataCache.set(key, voxelData);
+          chunkStorage.saveChunk(position, voxelData);
+          resolve(voxelData);
+          workerManager.removeMessageHandler(responseHandler);
+        }
+      };
+
+      workerManager.addMessageHandler(responseHandler);
+
+      workerManager.queueTask({
+        type: "requestChunkData",
+        position,
+        data: null // explicitly null because it's not in storage
+      });
+
+      // Add timeout
+      setTimeout(() => {
+        workerManager.removeMessageHandler(responseHandler);
+        reject(new Error(`Timeout requesting chunk data for ${key}`));
+      }, 5000);
+    })
   };
 
   let chunksToUnloadQueue: string[] = [];
 
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
-    const {type, ...data} = event.data;
-    
+    const { type, ...data } = event.data;
+
     if (type === "chunkMeshUpdated") {
-        const { position, vertices, indices, visibilityBits } = data;
-        const aabb = createAABB(
-            vec3.fromValues(position[0] * CHUNK_SIZE_X, position[1] * CHUNK_SIZE_Y, position[2] * CHUNK_SIZE_Z),
-            vec3.fromValues((position[0] + 1) * CHUNK_SIZE_X, (position[1] + 1) * CHUNK_SIZE_Y, (position[2] + 1) * CHUNK_SIZE_Z)
-        );
-        renderer.chunkManager.updateChunkGeometryInfo(
-            position,
-            new Float32Array(vertices),
-            vertices.byteLength,
-            new Uint32Array(indices),
-            indices.byteLength,
-            aabb,
-            visibilityBits
-        );
+      const { position, vertices, indices, visibilityBits } = data;
+      const aabb = createAABB(
+        vec3.fromValues(position[0] * CHUNK_SIZE_X, position[1] * CHUNK_SIZE_Y, position[2] * CHUNK_SIZE_Z),
+        vec3.fromValues((position[0] + 1) * CHUNK_SIZE_X, (position[1] + 1) * CHUNK_SIZE_Y, (position[2] + 1) * CHUNK_SIZE_Z)
+      );
+      renderer.chunkManager.updateChunkGeometryInfo(
+        position,
+        new Float32Array(vertices),
+        vertices.byteLength,
+        new Uint32Array(indices),
+        indices.byteLength,
+        aabb,
+        visibilityBits
+      );
     } else if (type === "chunkDataAvailable") {
       const { position, voxels } = data;
       const key = getChunkKey(position);
@@ -204,11 +204,11 @@ async function main() {
       chunkDataCache.set(key, voxelData);
       chunksReceived++;
     } else if (type === "chunkGenerated") {
-        chunkStorage.saveChunk(data.position, new Uint8Array(data.voxels));
+      chunkStorage.saveChunk(data.position, new Uint8Array(data.voxels));
     } else if (type === "chunkNeedsDeletion") {
-        chunkStorage.deleteChunk(data.position);
+      chunkStorage.deleteChunk(data.position);
     } else if (type === "chunksToUnload") {
-        chunksToUnloadQueue.push(...data.chunks);
+      chunksToUnloadQueue.push(...data.chunks);
     } else {
       log.warn("Main", `Unknown message type from worker: ${type}`);
     }
@@ -263,10 +263,10 @@ async function main() {
         const lastPos = vec3.scaleAndAdd(vec3.create(), rayStart, lookDirection, distance - STEP_SIZE);
         const diff = vec3.sub(vec3.create(), block, lastPos);
         const maxVal = Math.max(...diff.map(Math.abs));
-        
+
         let face: 0 | 1 | 2 | 3 | 4 | 5 = 0;
-        if(Math.abs(diff[0]) === maxVal) face = diff[0] > 0 ? 1 : 0;
-        else if(Math.abs(diff[1]) === maxVal) face = diff[1] > 0 ? 3 : 2;
+        if (Math.abs(diff[0]) === maxVal) face = diff[0] > 0 ? 1 : 0;
+        else if (Math.abs(diff[1]) === maxVal) face = diff[1] > 0 ? 3 : 2;
         else face = diff[2] > 0 ? 5 : 4;
 
         return { block, face, };
@@ -296,7 +296,7 @@ async function main() {
       await chunkStorage.flushPendingSaves();
       log("Main", "Requested manual flush of pending saves");
     }
-    
+
     if (keyboardState.pressedKeys.has("KeyQ")) {
       blockToPlace -= 1;
       if (blockToPlace <= VoxelType.AIR) {
@@ -319,7 +319,7 @@ async function main() {
       const chunk = new Chunk(chunkPosition, chunkData);
       const localPosition = getLocalPosition(block);
       chunk.setVoxel(localPosition, VoxelType.AIR);
-      
+
       const mainThreadData = chunk.data.slice();
       chunkDataCache.set(getChunkKey(chunkPosition), mainThreadData);
       chunkStorage.saveChunk(chunkPosition, mainThreadData, true);
@@ -331,7 +331,8 @@ async function main() {
           position: chunk.position,
           data: workerData.buffer,
         },
-        [workerData.buffer]
+        [workerData.buffer],
+        true
       );
     } else if (keyboardState.mouseRightClicked && blockLookedAt) {
       const { block, face } = blockLookedAt;
@@ -355,7 +356,8 @@ async function main() {
           position: chunk.position,
           data: workerData.buffer,
         },
-        [workerData.buffer]
+        [workerData.buffer],
+        true
       );
     }
 
@@ -388,17 +390,17 @@ async function main() {
     }
     setTimeout(() => requestIdleCallback(() => unloadChunks(), { timeout: 2500 }), 100);
   };
-  
+
   const processUnloadQueue = () => {
-      const chunksThisFrame = chunksToUnloadQueue.splice(0, 500);
-      for (const key of chunksThisFrame) {
-          const chunkInfo = renderer.chunkManager.chunkGeometryInfo.get(key);
-          if (chunkInfo) {
-              renderer.chunkManager.deleteChunk(chunkInfo.position);
-              requestedChunkKeys.delete(key);
-          }
+    const chunksThisFrame = chunksToUnloadQueue.splice(0, 500);
+    for (const key of chunksThisFrame) {
+      const chunkInfo = renderer.chunkManager.chunkGeometryInfo.get(key);
+      if (chunkInfo) {
+        renderer.chunkManager.deleteChunk(chunkInfo.position);
+        requestedChunkKeys.delete(key);
       }
-      requestAnimationFrame(processUnloadQueue);
+    }
+    requestAnimationFrame(processUnloadQueue);
   }
 
   const cleanupPhysicsCache = () => {
@@ -491,8 +493,8 @@ async function main() {
       highlightedBlockPositions,
       fov,
       debugCameraEnabled ? {
-          position: vec3.fromValues(playerState.position[0] - 150, playerState.position[1] + 150, playerState.position[2] - 150),
-          target: playerState.position,
+        position: vec3.fromValues(playerState.position[0] - 150, playerState.position[1] + 150, playerState.position[2] - 150),
+        target: playerState.position,
       } : undefined,
       debugMode
     );
@@ -543,7 +545,7 @@ Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
   const updateToolbar = () => {
     if (!toolbarElement) return;
     toolbarElement.innerHTML = "";
-    const voxelTypes = Object.entries(VoxelType).filter(([key]) => isNaN(Number(key)) && key !== 'AIR').map(([name, id]) => ({name, id: id as VoxelType}));
+    const voxelTypes = Object.entries(VoxelType).filter(([key]) => isNaN(Number(key)) && key !== 'AIR').map(([name, id]) => ({ name, id: id as VoxelType }));
 
     for (const voxelType of voxelTypes) {
       const button = document.createElement("button");
