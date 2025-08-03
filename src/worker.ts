@@ -6,6 +6,7 @@ import { Terrain } from "./terrain";
 import { Chunk } from "./chunk";
 import { ENABLE_GREEDY_MESHING } from "./config";
 import log from "./logger";
+import { VoxelType } from "./common/voxel-types";
 
 // Initialize terrain generator
 const terrain = new Terrain();
@@ -15,7 +16,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   if (type === "requestChunk") {
     const { position, data: existingData } = event.data;
-    
+
     let chunk;
     if (existingData) {
       chunk = new Chunk(position, new Uint8Array(existingData));
@@ -28,7 +29,7 @@ self.onmessage = async (event: MessageEvent) => {
         voxels: dataForStorage
       }, [dataForStorage as ArrayBuffer]);
     }
-    
+
     const mesh = chunk.generateMesh();
     self.postMessage({
       type: "chunkMeshUpdated",
@@ -40,33 +41,38 @@ self.onmessage = async (event: MessageEvent) => {
 
   } else if (type === "requestChunkData") {
     const { position, data: existingData } = event.data;
-    if(existingData) {
-        self.postMessage({
-            type: "chunkDataAvailable",
-            position,
-            voxels: existingData,
-        }, [existingData as ArrayBuffer]);
+    if (existingData) {
+      self.postMessage({
+        type: "chunkDataAvailable",
+        position,
+        voxels: existingData,
+      }, [existingData as ArrayBuffer]);
     } else {
-        const chunk = terrain.generateTerrain(position);
-        const dataForStorage = chunk.data.buffer.slice(0);
-        const dataForCache = chunk.data.buffer.slice(0);
-        self.postMessage({
-            type: "chunkGenerated",
-            position: position,
-            voxels: dataForStorage
-        }, [dataForStorage as ArrayBuffer]);
-        self.postMessage({
-            type: "chunkDataAvailable",
-            position,
-            voxels: dataForCache,
-        }, [dataForCache as ArrayBuffer]);
+      const chunk = terrain.generateTerrain(position);
+      const dataForStorage = chunk.data.buffer.slice(0);
+      const dataForCache = chunk.data.buffer.slice(0);
+      self.postMessage({
+        type: "chunkGenerated",
+        position: position,
+        voxels: dataForStorage
+      }, [dataForStorage as ArrayBuffer]);
+      self.postMessage({
+        type: "chunkDataAvailable",
+        position,
+        voxels: dataForCache,
+      }, [dataForCache as ArrayBuffer]);
     }
-    
+
   } else if (type === "renderChunk") {
     const { position, data } = event.data;
     const chunkData = new Uint8Array(data);
-    
+
     const chunk = new Chunk(position, chunkData);
+
+    if (chunk.data.every(voxel => voxel === VoxelType.AIR)) {
+      return;
+    }
+
     const mesh = chunk.generateMesh();
 
     self.postMessage({
@@ -79,37 +85,37 @@ self.onmessage = async (event: MessageEvent) => {
 
   } else if (type === "deleteChunk") {
     self.postMessage({
-        type: 'chunkNeedsDeletion',
-        position: event.data.position
+      type: 'chunkNeedsDeletion',
+      position: event.data.position
     });
 
   } else if (type === "unloadChunks") {
     const { allChunkKeys, playerPosition, loadRadiusXZ, loadRadiusY, unloadBufferXZ, unloadBufferY } = event.data;
     const chunksToUnload: string[] = [];
-    
+
     const unloadRadiusXZ = loadRadiusXZ + unloadBufferXZ;
     const unloadRadiusY = loadRadiusY + unloadBufferY;
-    
+
     for (const chunkKey of allChunkKeys) {
       const [x, y, z] = chunkKey.split(',').map(Number);
       const chunkPos = vec3.fromValues(x, y, z);
-      
+
       const dx = Math.abs(chunkPos[0] - playerPosition[0]);
       const dy = Math.abs(chunkPos[1] - playerPosition[1]);
       const dz = Math.abs(chunkPos[2] - playerPosition[2]);
-      
+
       if (dx > unloadRadiusXZ || dy > unloadRadiusY || dz > unloadRadiusXZ) {
         chunksToUnload.push(chunkKey);
       }
     }
-    
+
     if (chunksToUnload.length > 0) {
       self.postMessage({
         type: "chunksToUnload",
         chunks: chunksToUnload,
       });
     }
-    
+
   } else {
     log.warn("Worker", `Unknown message type received: ${type}`);
   }
