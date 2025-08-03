@@ -259,17 +259,49 @@ async function main() {
       const chunk = new Chunk(blockChunk, cached);
 
       if (chunk.getVoxel(localPosition) !== VoxelType.AIR) {
-        // --- Determine which face was hit ---
-        const lastPos = vec3.scaleAndAdd(vec3.create(), rayStart, lookDirection, distance - STEP_SIZE);
-        const diff = vec3.sub(vec3.create(), block, lastPos);
-        const maxVal = Math.max(...diff.map(Math.abs));
+        // --- Determine which face was hit using Ray-AABB intersection ---
+        const aabbMin = block;
+        const aabbMax = vec3.add(vec3.create(), block, [1, 1, 1]);
 
+        // Avoid division by zero if lookDirection component is zero
+        const invDirX = lookDirection[0] === 0 ? Number.POSITIVE_INFINITY : 1.0 / lookDirection[0];
+        const invDirY = lookDirection[1] === 0 ? Number.POSITIVE_INFINITY : 1.0 / lookDirection[1];
+        const invDirZ = lookDirection[2] === 0 ? Number.POSITIVE_INFINITY : 1.0 / lookDirection[2];
+
+        const tx1 = (aabbMin[0] - rayStart[0]) * invDirX;
+        const tx2 = (aabbMax[0] - rayStart[0]) * invDirX;
+        const tminX = Math.min(tx1, tx2);
+        const tmaxX = Math.max(tx1, tx2);
+
+        const ty1 = (aabbMin[1] - rayStart[1]) * invDirY;
+        const ty2 = (aabbMax[1] - rayStart[1]) * invDirY;
+        const tminY = Math.min(ty1, ty2);
+        const tmaxY = Math.max(ty1, ty2);
+
+        const tz1 = (aabbMin[2] - rayStart[2]) * invDirZ;
+        const tz2 = (aabbMax[2] - rayStart[2]) * invDirZ;
+        const tminZ = Math.min(tz1, tz2);
+        const tmaxZ = Math.max(tz1, tz2);
+
+        const tmin = Math.max(tminX, tminY, tminZ);
+        const tmax = Math.min(tmaxX, tmaxY, tmaxZ);
+
+        if (tmin >= tmax || tmax < 0) {
+            return null;
+        }
+        
         let face: 0 | 1 | 2 | 3 | 4 | 5 = 0;
-        if (Math.abs(diff[0]) === maxVal) face = diff[0] > 0 ? 1 : 0;
-        else if (Math.abs(diff[1]) === maxVal) face = diff[1] > 0 ? 3 : 2;
-        else face = diff[2] > 0 ? 5 : 4;
+        const epsilon = 1e-5;
 
-        return { block, face, };
+        if (Math.abs(tmin - tminX) < epsilon) {
+            face = lookDirection[0] > 0 ? 1 : 0;
+        } else if (Math.abs(tmin - tminY) < epsilon) {
+            face = lookDirection[1] > 0 ? 3 : 2;
+        } else {
+            face = lookDirection[2] > 0 ? 5 : 4;
+        }
+
+        return { block, face };
       }
     }
 
@@ -400,7 +432,7 @@ async function main() {
         requestedChunkKeys.delete(key);
       }
     }
-    requestAnimationFrame(processUnloadQueue);
+    setTimeout(() => requestIdleCallback(processUnloadQueue, { timeout: 500 }), 500);
   }
 
   const cleanupPhysicsCache = () => {
@@ -456,7 +488,7 @@ async function main() {
       }
     }
 
-    setTimeout(() => requestIdleCallback(loadChunksNearby, { timeout: 500 }), 100);
+    setTimeout(() => requestIdleCallback(loadChunksNearby, { timeout: 500 }), 500);
   };
 
   loadChunksNearby();

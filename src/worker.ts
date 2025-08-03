@@ -21,11 +21,12 @@ self.onmessage = async (event: MessageEvent) => {
       chunk = new Chunk(position, new Uint8Array(existingData));
     } else {
       chunk = terrain.generateTerrain(position);
+      const dataForStorage = chunk.data.buffer.slice(0);
       self.postMessage({
         type: "chunkGenerated",
         position: position,
-        voxels: chunk.data.buffer
-      }, [chunk.data.buffer as ArrayBuffer]);
+        voxels: dataForStorage
+      }, [dataForStorage as ArrayBuffer]);
     }
     
     const mesh = chunk.generateMesh();
@@ -47,16 +48,18 @@ self.onmessage = async (event: MessageEvent) => {
         }, [existingData as ArrayBuffer]);
     } else {
         const chunk = terrain.generateTerrain(position);
+        const dataForStorage = chunk.data.buffer.slice(0);
+        const dataForCache = chunk.data.buffer.slice(0);
         self.postMessage({
             type: "chunkGenerated",
             position: position,
-            voxels: chunk.data.buffer
-        }, [chunk.data.buffer as ArrayBuffer]);
+            voxels: dataForStorage
+        }, [dataForStorage as ArrayBuffer]);
         self.postMessage({
             type: "chunkDataAvailable",
             position,
-            voxels: chunk.data.buffer,
-        }, [chunk.data.buffer as ArrayBuffer]);
+            voxels: dataForCache,
+        }, [dataForCache as ArrayBuffer]);
     }
     
   } else if (type === "renderChunk") {
