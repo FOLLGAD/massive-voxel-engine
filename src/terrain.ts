@@ -170,6 +170,8 @@ export class Terrain {
     const worldOffsetX = chunk.position[0] * CHUNK_SIZE_X;
     const worldOffsetZ = chunk.position[2] * CHUNK_SIZE_Z;
 
+    let isOnlyAir = true;
+
     for (let x = 0; x < CHUNK_SIZE_X; x++) {
       for (let z = 0; z < CHUNK_SIZE_Z; z++) {
         // Calculate world coordinates for noise input
@@ -202,19 +204,21 @@ export class Terrain {
         for (let y = 0; y < CHUNK_SIZE_Y; y++) {
           const worldY = chunkBaseY + y; // Voxel's world Y position
 
+          let voxelType = VoxelType.AIR;
+
           // --- Basic Terrain Placement ---
           if (worldY > height) {
-              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
+            voxelType = VoxelType.AIR;
             //if (Math.random() < 3e-6) {
             //  chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STAR);
             //} else {
             //}
           } else if (worldY <= height && worldY > height - 3) {
-            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.GRASS);
+            voxelType = VoxelType.GRASS;
           } else if (worldY > height - stoneDepth) {
-            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.DIRT);
+            voxelType = VoxelType.DIRT;
           } else {
-            chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.STONE);
+            voxelType = VoxelType.STONE;
           }
 
           // --- Cave Carving (only affects blocks below surface) ---
@@ -223,27 +227,20 @@ export class Terrain {
               this.tunnelCaves(worldX, worldY, worldZ)
               // || this.epicCaves(worldX, worldY, worldZ)
             ) {
-              chunk.setVoxel(vec3.fromValues(x, y, z), VoxelType.AIR);
+              voxelType = VoxelType.AIR;
             }
           }
+
+          if (voxelType !== VoxelType.AIR) {
+            isOnlyAir = false;
+          }
+
+          chunk.setVoxel(vec3.fromValues(x, y, z), voxelType);
         }
       }
     }
-    // Count solid blocks for debugging
-    let solidBlocks = 0;
-    let airBlocks = 0;
-    for (let i = 0; i < chunk.data.length; i++) {
-      if (chunk.data[i] !== VoxelType.AIR) {
-        solidBlocks++;
-      } else {
-        airBlocks++;
-      }
-    }
-    
-    log(
-      "Terrain",
-      `Terrain generation complete for chunk ${chunk.position[0]},${chunk.position[1]},${chunk.position[2]} - ${solidBlocks} solid, ${airBlocks} air blocks`
-    );
+
+    chunk.metadata.isOnlyAir = isOnlyAir;
 
     return chunk;
   }

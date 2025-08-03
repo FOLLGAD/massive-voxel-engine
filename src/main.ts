@@ -165,7 +165,7 @@ async function main() {
       workerManager.queueTask({
         type: "requestChunkData",
         position,
-        data: null // explicitly null because it's not in storage
+        data: null, // explicitly null because it's not in storage
       });
 
       // Add timeout
@@ -287,18 +287,18 @@ async function main() {
         const tmax = Math.min(tmaxX, tmaxY, tmaxZ);
 
         if (tmin >= tmax || tmax < 0) {
-            return null;
+          return null;
         }
-        
+
         let face: 0 | 1 | 2 | 3 | 4 | 5 = 0;
         const epsilon = 1e-5;
 
         if (Math.abs(tmin - tminX) < epsilon) {
-            face = lookDirection[0] > 0 ? 1 : 0;
+          face = lookDirection[0] > 0 ? 1 : 0;
         } else if (Math.abs(tmin - tminY) < epsilon) {
-            face = lookDirection[1] > 0 ? 3 : 2;
+          face = lookDirection[1] > 0 ? 3 : 2;
         } else {
-            face = lookDirection[2] > 0 ? 5 : 4;
+          face = lookDirection[2] > 0 ? 5 : 4;
         }
 
         return { block, face };
@@ -473,17 +473,35 @@ async function main() {
 
       if (positionsToLoad.length > 0) {
         log("Main", `Requesting ${positionsToLoad.length} new chunks.`);
-        const storedChunks = await chunkStorage.loadChunks(positionsToLoad);
 
-        for (const chunkPos of positionsToLoad) {
-          const key = getChunkKey(chunkPos);
-          const storedData = storedChunks.get(key);
+        // Helper to chunk an array into batches of size batchSize
+        function chunkArray<T>(arr: T[], batchSize: number): T[][] {
+          const result: T[][] = [];
+          for (let i = 0; i < arr.length; i += batchSize) {
+            result.push(arr.slice(i, i + batchSize));
+          }
+          return result;
+        }
 
-          workerManager.queueTask({
-            type: "requestChunk",
-            position: chunkPos,
-            data: storedData ? storedData.buffer : null
-          }, storedData ? [storedData.buffer] : []);
+        // We'll process in 100x100 = 10,000 chunk batches
+        const BATCH_SIZE = 100 * 100;
+        const batches = chunkArray(positionsToLoad, BATCH_SIZE);
+
+        // Process each batch sequentially, but inside each batch, queue all at once
+        for (const batch of batches) {
+          // Await loading all chunks in this batch
+          const storedChunks = await chunkStorage.loadChunks(batch);
+
+          for (const chunkPos of batch) {
+            const key = getChunkKey(chunkPos);
+            const storedData = storedChunks.get(key);
+
+            workerManager.queueTask({
+              type: "requestChunk",
+              position: chunkPos,
+              data: storedData ? storedData.buffer : null,
+            }, storedData ? [storedData.buffer] : []);
+          }
         }
       }
     }
