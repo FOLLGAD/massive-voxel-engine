@@ -30,6 +30,8 @@ import highlightShaderCode from "./shaders/highlight.wgsl" with { type: "text" }
 // @ts-ignore
 import cullChunksShader from "./shaders/cullChunks.wgsl" with { type: "text" }; // Unused?
 // @ts-ignore
+import cullShaderCode from "./shaders/cull.wgsl" with { type: "text" };
+// @ts-ignore
 import skyShaderCode from "./shaders/sky.wgsl" with { type: "text" }; // Import the sky shader
 
 
@@ -75,7 +77,7 @@ const cullChunks = (
   cameraPosition: vec3
 ): ChunkGeometryInfo[] => {
   let totalIntersectionTime = 0;
-  
+
   const startChunkPos = getChunkOfPosition(cameraPosition);
   const startChunkKey = getChunkKey(startChunkPos);
   const startChunkInfo = allChunkInfos.get(startChunkKey);
@@ -223,8 +225,12 @@ export class Renderer {
   public linePipeline: GPURenderPipeline;
   public highlightPipeline: GPURenderPipeline;
   public skyPipeline: GPURenderPipeline; // Added sky pipeline
+  public cullPipeline: GPUComputePipeline; // For GPU culling
   public uniformBuffer: GPUBuffer;
   public bindGroup: GPUBindGroup;
+  public cullBindGroup: GPUBindGroup; // For GPU culling
+  public chunkInfoBuffer: GPUBuffer; // Buffer with all chunk data for culling
+  public frustumBuffer: GPUBuffer; // Buffer for frustum planes
   public uiUniformBuffer: GPUBuffer;
   public uiBindGroup: GPUBindGroup;
   public skyUniformBuffer: GPUBuffer; // Added sky uniform buffer
@@ -258,57 +264,65 @@ export class Renderer {
   private canvasHeight = 0;
   private aspect = 1.0; // Added aspect ratio state
 
-  private constructor(
+  private constructor(options: {
     device: GPUDevice,
     context: GPUCanvasContext,
     presentationFormat: GPUTextureFormat,
     voxelPipeline: GPURenderPipeline,
     linePipeline: GPURenderPipeline,
     highlightPipeline: GPURenderPipeline,
-    skyPipeline: GPURenderPipeline, // Added sky pipeline parameter
+    skyPipeline: GPURenderPipeline,
+    cullPipeline: GPUComputePipeline,
     uniformBuffer: GPUBuffer,
     bindGroup: GPUBindGroup,
+    cullBindGroup: GPUBindGroup,
+    chunkInfoBuffer: GPUBuffer,
+    frustumBuffer: GPUBuffer,
     uiUniformBuffer: GPUBuffer,
     uiBindGroup: GPUBindGroup,
-    skyUniformBuffer: GPUBuffer, // Added sky uniform buffer parameter
-    skyBindGroup: GPUBindGroup,   // Added sky bind group parameter
+    skyUniformBuffer: GPUBuffer,
+    skyBindGroup: GPUBindGroup,
     debugLineBuffer: GPUBuffer,
     debugLineBufferSize: number,
     highlightVertexBuffer: GPUBuffer,
     crosshairVertexBuffer: GPUBuffer,
     crosshairVertexCount: number,
-    skyVertexBuffer: GPUBuffer, // Added sky vertex buffer parameter
+    skyVertexBuffer: GPUBuffer,
     chunkManager: ChunkManager,
     sharedVertexBuffer: GPUBuffer,
     sharedIndexBuffer: GPUBuffer,
-    indirectDrawBuffer: GPUBuffer, // Add indirect buffer
-    indirectDrawBufferSizeCommands: number // Add size tracking
-  ) {
-    this.device = device;
-    this.context = context;
-    this.presentationFormat = presentationFormat;
-    this.voxelPipeline = voxelPipeline;
-    this.linePipeline = linePipeline;
-    this.highlightPipeline = highlightPipeline;
-    this.skyPipeline = skyPipeline; // Assign sky pipeline
-    this.uniformBuffer = uniformBuffer;
-    this.bindGroup = bindGroup;
-    this.uiUniformBuffer = uiUniformBuffer;
-    this.uiBindGroup = uiBindGroup;
-    this.skyUniformBuffer = skyUniformBuffer; // Assign sky uniform buffer
-    this.skyBindGroup = skyBindGroup;     // Assign sky bind group
-    this.debugLineBuffer = debugLineBuffer;
-    this.debugLineBufferSize = debugLineBufferSize;
-    this.highlightVertexBuffer = highlightVertexBuffer;
+    indirectDrawBuffer: GPUBuffer,
+    indirectDrawBufferSizeCommands: number
+  }) {
+    this.device = options.device;
+    this.context = options.context;
+    this.presentationFormat = options.presentationFormat;
+    this.voxelPipeline = options.voxelPipeline;
+    this.linePipeline = options.linePipeline;
+    this.highlightPipeline = options.highlightPipeline;
+    this.skyPipeline = options.skyPipeline;
+    this.cullPipeline = options.cullPipeline;
+    this.uniformBuffer = options.uniformBuffer;
+    this.bindGroup = options.bindGroup;
+    this.cullBindGroup = options.cullBindGroup;
+    this.chunkInfoBuffer = options.chunkInfoBuffer;
+    this.frustumBuffer = options.frustumBuffer;
+    this.uiUniformBuffer = options.uiUniformBuffer;
+    this.uiBindGroup = options.uiBindGroup;
+    this.skyUniformBuffer = options.skyUniformBuffer;
+    this.skyBindGroup = options.skyBindGroup;
+    this.debugLineBuffer = options.debugLineBuffer;
+    this.debugLineBufferSize = options.debugLineBufferSize;
+    this.highlightVertexBuffer = options.highlightVertexBuffer;
     this.highlightVertexBufferSize = INITIAL_HIGHLIGHT_BUFFER_SIZE;
-    this.crosshairVertexBuffer = crosshairVertexBuffer;
-    this.crosshairVertexCount = crosshairVertexCount;
-    this.skyVertexBuffer = skyVertexBuffer; // Assign sky vertex buffer
-    this.chunkManager = chunkManager;
-    this.sharedVertexBuffer = sharedVertexBuffer;
-    this.sharedIndexBuffer = sharedIndexBuffer;
-    this.indirectDrawBuffer = indirectDrawBuffer; // Assign indirect buffer
-    this.indirectDrawBufferSizeCommands = indirectDrawBufferSizeCommands; // Assign size tracking
+    this.crosshairVertexBuffer = options.crosshairVertexBuffer;
+    this.crosshairVertexCount = options.crosshairVertexCount;
+    this.skyVertexBuffer = options.skyVertexBuffer;
+    this.chunkManager = options.chunkManager;
+    this.sharedVertexBuffer = options.sharedVertexBuffer;
+    this.sharedIndexBuffer = options.sharedIndexBuffer;
+    this.indirectDrawBuffer = options.indirectDrawBuffer;
+    this.indirectDrawBufferSizeCommands = options.indirectDrawBufferSizeCommands;
 
     // Initialize aspect ratio
     this.canvasWidth = this.context.canvas.width;
@@ -332,7 +346,7 @@ export class Renderer {
     };
 
     // --- Depth Texture ---
-    this.depthTexture = this.configureDepthTexture(device, null);
+    this.depthTexture = this.configureDepthTexture(this.device, null);
     this.canvasWidth = this.context.canvas.width;
     this.canvasHeight = this.context.canvas.height;
   }
@@ -346,7 +360,11 @@ export class Renderer {
     if (!adapter) {
       throw new Error("No appropriate GPUAdapter found.");
     }
+
+    const requiredFeatures: GPUFeatureName[] = [];
+
     const device = await adapter.requestDevice({
+      requiredFeatures,
       requiredLimits: {
         maxBufferSize: 1024 * 1024 * 1024 * 2, // 2GB
       }
@@ -435,6 +453,32 @@ export class Renderer {
     const skyPipeline = Renderer.createSkyPipeline(device, presentationFormat, skyPipelineLayout); // Use dedicated sky layout
 
 
+    // --- Create Culling Resources ---
+    const cullShaderModule = device.createShaderModule({ code: cullShaderCode });
+    const cullPipeline = device.createComputePipeline({
+      label: "Culling Compute Pipeline",
+      layout: "auto",
+      compute: {
+        module: cullShaderModule,
+        entryPoint: "main",
+      },
+    });
+
+    const frustumBufferSize = 6 * 4 * Float32Array.BYTES_PER_ELEMENT; // 6 planes * 4 floats/plane
+    const frustumBuffer = device.createBuffer({
+      label: "Frustum Planes Buffer",
+      size: frustumBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // This buffer will be resized dynamically
+    const chunkInfoBuffer = device.createBuffer({
+      label: "Chunk Info Buffer (for culling)",
+      size: 1024, // Initial size, will be resized
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+
     // --- Create Shared Buffers ---
     const sharedVertexBuffer = device.createBuffer({
       label: "Shared Vertex Buffer",
@@ -493,37 +537,51 @@ export class Renderer {
     const indirectDrawBuffer = device.createBuffer({
       label: "Indirect Draw Buffer",
       size: initialIndirectBufferSize,
-      usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+    });
+
+    const cullBindGroup = device.createBindGroup({
+      label: "Culling Bind Group",
+      layout: cullPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: frustumBuffer } },
+        { binding: 1, resource: { buffer: chunkInfoBuffer } },
+        { binding: 2, resource: { buffer: indirectDrawBuffer } },
+      ],
     });
 
 
     // Create the Renderer instance
-    const renderer = new Renderer(
+    const renderer = new Renderer({
       device,
       context,
       presentationFormat,
       voxelPipeline,
       linePipeline,
       highlightPipeline,
-      skyPipeline, // Pass sky pipeline
+      skyPipeline,
+      cullPipeline,
       uniformBuffer,
       bindGroup,
-      uiUniformBuffer, // Pass UI buffer
-      uiBindGroup, // Pass UI bind group
-      skyUniformBuffer, // Pass sky uniform buffer
-      skyBindGroup,   // Pass sky bind group
+      cullBindGroup,
+      chunkInfoBuffer,
+      frustumBuffer,
+      uiUniformBuffer,
+      uiBindGroup,
+      skyUniformBuffer,
+      skyBindGroup,
       debugLineBuffer,
-      INITIAL_DEBUG_LINE_BUFFER_SIZE,
+      debugLineBufferSize: INITIAL_DEBUG_LINE_BUFFER_SIZE,
       highlightVertexBuffer,
       crosshairVertexBuffer,
       crosshairVertexCount,
-      skyVertexBuffer, // Pass sky vertex buffer
+      skyVertexBuffer,
       chunkManager,
       sharedVertexBuffer,
       sharedIndexBuffer,
-      indirectDrawBuffer, // Pass indirect buffer
-      INITIAL_INDIRECT_BUFFER_COMMANDS // Pass size tracking
-    );
+      indirectDrawBuffer,
+      indirectDrawBufferSizeCommands: INITIAL_INDIRECT_BUFFER_COMMANDS
+    });
 
     // Write initial UI matrix (identity) *after* Renderer creation
     renderer.device.queue.writeBuffer(renderer.uiUniformBuffer, 0, mat4.create() as Float32Array);
@@ -895,8 +953,6 @@ export class Renderer {
     enableDebugView = true
   ): { totalTriangles: number; drawnChunks: number } {
     const frameStartTime = performance.now();
-    let extractPlanesDuration = 0;
-    let cullChunksDuration = 0;
     let drawSceneDuration = 0;
     let highlightGenDuration = 0;
     let debugGenDuration = 0;
@@ -979,8 +1035,99 @@ export class Renderer {
 
     writeUniformsDuration = performance.now() - writeUniformsStart;
 
-    // --- Begin Render Pass ---
+    // --- Begin Command Encoding ---
     const commandEncoder = this.device.createCommandEncoder();
+
+    // --- GPU Culling Pass ---
+    const allChunkInfo = Array.from(this.chunkManager.chunkGeometryInfo.values());
+    const totalChunks = allChunkInfo.length;
+
+    const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
+    if (totalChunks > 0) {
+      let needsBindGroupUpdate = false;
+
+      // Check if chunk info buffer needs resizing
+      const requiredChunkInfoSize = totalChunks * 12 * Float32Array.BYTES_PER_ELEMENT;
+      if (requiredChunkInfoSize > this.chunkInfoBuffer.size) {
+        this.chunkInfoBuffer.destroy();
+        // Use a growth factor to avoid resizing every frame
+        const newSize = Math.max(this.chunkInfoBuffer.size * 2, requiredChunkInfoSize);
+        this.chunkInfoBuffer = this.device.createBuffer({
+          label: "Chunk Info Buffer (Resized)",
+          size: newSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        needsBindGroupUpdate = true;
+        console.warn(`Resized chunk info buffer to size: ${newSize}`);
+      }
+
+      // Check if indirect buffer needs resizing
+      if (totalChunks > this.indirectDrawBufferSizeCommands) {
+        this.indirectDrawBuffer.destroy();
+        const newSizeCommands = Math.max(this.indirectDrawBufferSizeCommands * 2, totalChunks);
+        this.indirectDrawBufferSizeCommands = newSizeCommands;
+
+        this.indirectDrawBuffer = this.device.createBuffer({
+          label: "Indirect Draw Buffer (Resized)",
+          size: newSizeCommands * 5 * Uint32Array.BYTES_PER_ELEMENT,
+          usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        needsBindGroupUpdate = true;
+        console.warn(`Resized indirect draw buffer to command capacity: ${newSizeCommands}`);
+      }
+
+      // Recreate bind group if any buffer was resized
+      if (needsBindGroupUpdate) {
+        this.cullBindGroup = this.device.createBindGroup({
+          label: "Culling Bind Group (Resized)",
+          layout: this.cullPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.frustumBuffer } },
+            { binding: 1, resource: { buffer: this.chunkInfoBuffer } },
+            { binding: 2, resource: { buffer: this.indirectDrawBuffer } },
+          ],
+        });
+      }
+
+      // Prepare data for the compute shader
+      const flatPlanes = new Float32Array(6 * 4);
+      for (let i = 0; i < 6; i++) {
+        flatPlanes.set(frustumPlanes[i], i * 4);
+      }
+      this.device.queue.writeBuffer(this.frustumBuffer, 0, flatPlanes);
+
+      // Create and write chunk data, matching the 16-byte aligned struct in the shader
+      const floatsPerChunk = 12; // 4 (min) + 4 (max) + 4 (draw data)
+      const chunkData = new Float32Array(totalChunks * floatsPerChunk);
+      let offset = 0;
+      for (const info of allChunkInfo) {
+        // Write vec4 for min and max (with padding)
+        chunkData.set(info.aabb.min, offset); // x, y, z
+        // offset+3 is padding
+        chunkData.set(info.aabb.max, offset + 4); // x, y, z
+        // offset+7 is padding
+
+        // Use a DataView to write the u32/i32 values correctly
+        const dataView = new DataView(chunkData.buffer, chunkData.byteOffset);
+        const byteOffset = (offset + 8) * Float32Array.BYTES_PER_ELEMENT;
+        dataView.setUint32(byteOffset, info.indexCount, true); // indexCount
+        dataView.setUint32(byteOffset + 4, info.firstIndex, true); // firstIndex
+        dataView.setInt32(byteOffset + 8, info.baseVertex, true); // baseVertex
+
+        offset += floatsPerChunk;
+      }
+      this.device.queue.writeBuffer(this.chunkInfoBuffer, 0, chunkData);
+
+      const computePassEncoder = commandEncoder.beginComputePass();
+      computePassEncoder.setPipeline(this.cullPipeline);
+      computePassEncoder.setBindGroup(0, this.cullBindGroup);
+      const workgroupCount = Math.ceil(totalChunks / 64);
+      computePassEncoder.dispatchWorkgroups(workgroupCount);
+      computePassEncoder.end();
+    }
+
+
+    // --- Begin Render Pass ---
     const getTextureViewStart = performance.now();
     const textureView = this.context.getCurrentTexture().createView();
     getTextureViewDuration = performance.now() - getTextureViewStart;
@@ -1012,71 +1159,13 @@ export class Renderer {
     passEncoder.draw(36);
 
 
-    // --- Restore Culling --- 
-    const extractPlanesStart = performance.now();
-    const frustumPlanes = extractFrustumPlanes(this.vpMatrix);
-    extractPlanesDuration = performance.now() - extractPlanesStart;
-
-    const cullChunksStart = performance.now();
-    const visibleChunks = cullChunks(
-      this.chunkManager.chunkGeometryInfo,
-      frustumPlanes,
-      cameraPosition
-    );
-    cullChunksDuration = performance.now() - cullChunksStart;
-
-    const totalChunks = this.chunkManager.chunkGeometryInfo.size;
-    const visibleChunkCount = visibleChunks.length; // Get count of visible chunks
-    const culledChunkCount = totalChunks - visibleChunkCount;
-
-    // --- Resize Indirect Buffer if Necessary ---
-    // Check *before* creating the CPU array if the GPU buffer needs resizing.
-    if (visibleChunkCount > this.indirectDrawBufferSizeCommands) {
-      this.indirectDrawBuffer.destroy(); // Destroy the old GPU buffer
-      // Calculate new size (e.g., double it or match the required count, whichever is larger)
-      const newSizeCommands = Math.max(this.indirectDrawBufferSizeCommands * 2, visibleChunkCount);
-      this.indirectDrawBufferSizeCommands = newSizeCommands; // Update the tracked capacity
-      // Create the new, larger GPU buffer
-      this.indirectDrawBuffer = this.device.createBuffer({
-        label: "Indirect Draw Buffer (Resized)",
-        size: newSizeCommands * 5 * Uint32Array.BYTES_PER_ELEMENT,
-        usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
-      });
-      console.warn("Resized indirect draw buffer to command capacity:", newSizeCommands);
-    }
-
-    // --- Prepare Indirect Draw Buffer Data ---
-    // Create array with full *current* buffer capacity, initialized to zeros.
-    const indirectDrawCommands = new Uint32Array(this.indirectDrawBufferSizeCommands * 5);
-    let indirectOffset = 0;
-    // Fill the beginning with commands for visible chunks.
-    for (const info of visibleChunks) {
-      indirectDrawCommands[indirectOffset++] = info.indexCount; // indexcount
-      indirectDrawCommands[indirectOffset++] = 1; // instanceCount
-      indirectDrawCommands[indirectOffset++] = info.firstIndex; // FirstIndex
-      indirectDrawCommands[indirectOffset++] = info.baseVertex; // baseVertex
-      indirectDrawCommands[indirectOffset++] = 0; // firstInstance
-    }
-
-    // --- Write Indirect Buffer Data ---
-    // Calculate the exact byte size needed for the visible commands
-    const indirectCommandSizeBytes = visibleChunkCount * 5 * Uint32Array.BYTES_PER_ELEMENT;
-    // Write only the necessary part of the CPU array to the GPU buffer.
-    this.device.queue.writeBuffer(
-      this.indirectDrawBuffer,
-      0, // Write from the beginning of the buffer
-      indirectDrawCommands.buffer, // Source buffer
-      indirectDrawCommands.byteOffset, // Source offset
-      indirectCommandSizeBytes // Write only this many bytes
-    );
-
     // --- Draw Voxel Scene ---
     // Voxel scene uses the 'activeVpMatrix' (normal or debug) via the main uniform buffer/bind group
     const drawSceneStart = performance.now();
     // Pass only the count of visible chunks
 
     passEncoder.setPipeline(this.voxelPipeline);
-    passEncoder.setBindGroup(0, this.bindGroup); // Use main bind group (VP + Lighting)
+    passEncoder.setBindGroup(0, this.bindGroup); // Use main bindGroup (VP + Lighting)
 
     // Set the shared buffers ONCE
     passEncoder.setVertexBuffer(0, this.sharedVertexBuffer);
@@ -1084,7 +1173,8 @@ export class Renderer {
 
     // Issue drawIndexedIndirect for each visible chunk command
     const commandSizeInBytes = 5 * Uint32Array.BYTES_PER_ELEMENT;
-    for (let i = 0; i < visibleChunkCount; i++) {
+
+    for (let i = 0; i < totalChunks; i++) {
       const commandOffsetBytes = i * commandSizeInBytes;
       passEncoder.drawIndexedIndirect(
         this.indirectDrawBuffer,
@@ -1097,7 +1187,7 @@ export class Renderer {
     // Update debug info
     this.debugInfo.totalChunks = totalChunks;
     // this.debugInfo.drawnChunks = sceneStats.drawnChunks;
-    this.debugInfo.culledChunks = culledChunkCount;
+    this.debugInfo.culledChunks = 0; // Not easily known on CPU anymore
     // this.debugInfo.totalTriangles = sceneStats.totalTriangles; // Is 0 from drawVoxelScene
 
 
@@ -1185,8 +1275,6 @@ export class Renderer {
     // Log detailed timings (consider sampling this, e.g., every 60 frames, to avoid console spam)
     if (totalFrameDuration > 30) {
       console.log(`renderFrame: ${totalFrameDuration.toFixed(2)}ms [ ` +
-        `ExtractPlanes: ${extractPlanesDuration.toFixed(2)}, ` +
-        `Cull: ${cullChunksDuration.toFixed(2)}, ` +
         `DrawScene: ${drawSceneDuration.toFixed(2)}, ` +
         `HighlightGen: ${highlightGenDuration.toFixed(2)}, ` +
         `DebugGen: ${debugGenDuration.toFixed(2)}, ` +
@@ -1198,7 +1286,7 @@ export class Renderer {
 
     return {
       totalTriangles: 0,
-      drawnChunks: visibleChunkCount,
+      drawnChunks: totalChunks, // We tell the GPU to draw all, it culls internally
     };
   }
 

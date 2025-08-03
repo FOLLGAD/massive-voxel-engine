@@ -41,7 +41,7 @@ export class HybridChunkManager {
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
-    
+
     try {
       // Initialize storage without loading all stats
       await this.storage.ensureInitialized(); // This just initializes the DB connection
@@ -53,6 +53,10 @@ export class HybridChunkManager {
       this.isInitialized = true;
       log("HybridChunkManager", "Initialized in memory-only mode");
     }
+
+    this.saveTimeout = window.setInterval(() => {
+      this.flushPendingSaves();
+    }, 1000);
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -63,7 +67,7 @@ export class HybridChunkManager {
 
   async getChunk(position: vec3): Promise<Uint8Array | null> {
     await this.ensureInitialized();
-    
+
     const key = getChunkKey(position);
     const now = Date.now();
 
@@ -100,7 +104,6 @@ export class HybridChunkManager {
 
   setChunk(position: vec3, data: Uint8Array): void {
     const key = getChunkKey(position);
-    const now = Date.now();
 
     // Update cache
     this.addToCache(key, data);
@@ -111,28 +114,9 @@ export class HybridChunkManager {
     });
   }
 
-  async deleteChunk(position: vec3): Promise<void> {
-    await this.ensureInitialized();
-    
-    const key = getChunkKey(position);
-
-    // Remove from cache
-    this.cache.delete(key);
-
-    // Remove from pending saves
-    this.pendingSaves.delete(key);
-
-    // Delete from storage directly (no worker storage operations)
-    try {
-      await this.storage.deleteChunk(position);
-    } catch (error) {
-      log.error("HybridChunkManager", `Failed to delete chunk ${key} from storage:`, error);
-    }
-  }
-
   async hasChunk(position: vec3): Promise<boolean> {
     await this.ensureInitialized();
-    
+
     const key = getChunkKey(position);
 
     // Check cache first
@@ -176,8 +160,8 @@ export class HybridChunkManager {
     // Find the least recently used entry
     for (const [key, entry] of this.cache.entries()) {
       // Prioritize by access count first, then by last accessed time
-      if (entry.accessCount < lowestAccessCount || 
-          (entry.accessCount === lowestAccessCount && entry.lastAccessed < oldestTime)) {
+      if (entry.accessCount < lowestAccessCount ||
+        (entry.accessCount === lowestAccessCount && entry.lastAccessed < oldestTime)) {
         oldestKey = key;
         oldestTime = entry.lastAccessed;
         lowestAccessCount = entry.accessCount;
@@ -198,19 +182,19 @@ export class HybridChunkManager {
 
   async clearAll(): Promise<void> {
     await this.ensureInitialized();
-    
+
     this.cache.clear();
     this.cacheHits = 0;
     this.cacheMisses = 0;
     this.pendingSaves.clear();
-    
+
     await this.storage.clearAll();
     log("HybridChunkManager", "All data cleared");
   }
 
   async getStats(): Promise<HybridChunkManagerStats> {
     await this.ensureInitialized();
-    
+
     const storageStats = await this.storage.getStats();
     const totalRequests = this.cacheHits + this.cacheMisses;
     const hitRate = totalRequests > 0 ? this.cacheHits / totalRequests : 0;
@@ -230,7 +214,7 @@ export class HybridChunkManager {
   // Batch operations for better performance
   async getChunks(positions: vec3[]): Promise<Map<string, Uint8Array>> {
     await this.ensureInitialized();
-    
+
     const results = new Map<string, Uint8Array>();
     const positionsToLoad: vec3[] = [];
 
@@ -238,7 +222,7 @@ export class HybridChunkManager {
     for (const position of positions) {
       const key = getChunkKey(position);
       const cached = this.cache.get(key);
-      
+
       if (cached) {
         cached.lastAccessed = Date.now();
         cached.accessCount++;
@@ -254,7 +238,7 @@ export class HybridChunkManager {
     if (positionsToLoad.length > 0) {
       try {
         const loadedChunks = await this.storage.loadChunks(positionsToLoad);
-        
+
         // Add loaded chunks to results and cache
         for (const [key, data] of loadedChunks.entries()) {
           results.set(key, data);
@@ -294,9 +278,9 @@ export class HybridChunkManager {
   // Preload chunks into cache
   async preloadChunks(positions: vec3[]): Promise<void> {
     await this.ensureInitialized();
-    
+
     const chunksToLoad: vec3[] = [];
-    
+
     // Filter out chunks already in cache
     for (const position of positions) {
       const key = getChunkKey(position);
@@ -311,12 +295,12 @@ export class HybridChunkManager {
 
     try {
       const loadedChunks = await this.storage.loadChunks(chunksToLoad);
-      
+
       // Add to cache
       for (const [key, data] of loadedChunks.entries()) {
         this.addToCache(key, data);
       }
-      
+
       log("HybridChunkManager", `Preloaded ${loadedChunks.size} chunks`);
     } catch (error) {
       log.error("HybridChunkManager", "Failed to preload chunks:", error);
@@ -331,7 +315,7 @@ export class HybridChunkManager {
   // Set cache size limit
   setMaxCacheSize(size: number): void {
     this.maxCacheSize = size;
-    
+
     // Evict excess entries if needed
     while (this.cache.size > this.maxCacheSize) {
       this.evictLRU();
