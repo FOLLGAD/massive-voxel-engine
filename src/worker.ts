@@ -9,12 +9,15 @@ import log from "./logger";
 import { VoxelType } from "./common/voxel-types";
 
 // Initialize terrain generator
-const terrain = new Terrain();
+let terrain: Terrain | null = null;
 
 self.onmessage = async (event: MessageEvent) => {
   const type = event.data.type;
 
-  if (type === "requestChunk") {
+  if (type === "init") {
+    const { worldName, worldSeed } = event.data;
+    terrain = new Terrain(worldSeed);
+  } else if (type === "requestChunk") {
     const { position, data: existingData } = event.data;
 
     let chunk;

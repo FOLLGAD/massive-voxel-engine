@@ -249,12 +249,6 @@ export class Renderer {
   public viewMatrixDebug: mat4;
   public projectionMatrixDebug: mat4;
   public vpMatrixDebug: mat4;
-  public debugInfo: {
-    totalChunks: number;
-    drawnChunks: number;
-    totalTriangles: number;
-    culledChunks: number; // This might need recalculation based on the new culling logic
-  };
   public chunkManager: ChunkManager;
   public sharedVertexBuffer: GPUBuffer;
   public sharedIndexBuffer: GPUBuffer;
@@ -336,14 +330,6 @@ export class Renderer {
     this.viewMatrixDebug = mat4.create();
     this.projectionMatrixDebug = mat4.create();
     this.vpMatrixDebug = mat4.create();
-
-    // Debug Info
-    this.debugInfo = {
-      totalChunks: 0,
-      drawnChunks: 0,
-      totalTriangles: 0,
-      culledChunks: 0,
-    };
 
     // --- Depth Texture ---
     this.depthTexture = this.configureDepthTexture(this.device, null);
@@ -1183,14 +1169,6 @@ export class Renderer {
     }
 
     drawSceneDuration = performance.now() - drawSceneStart;
-
-    // Update debug info
-    this.debugInfo.totalChunks = totalChunks;
-    // this.debugInfo.drawnChunks = sceneStats.drawnChunks;
-    this.debugInfo.culledChunks = 0; // Not easily known on CPU anymore
-    // this.debugInfo.totalTriangles = sceneStats.totalTriangles; // Is 0 from drawVoxelScene
-
-
     // --- Prepare and Draw Highlights ---
     // Highlights use the 'activeVpMatrix' but via the UI bind group/buffer
     let totalHighlightVertices = 0;

@@ -1,3 +1,5 @@
+import { WorkerMessageInit } from "./worker.types";
+
 export class WorkerManager {
   private workers: Worker[];
   private instantWorkers: Worker[] = [];
@@ -5,13 +7,13 @@ export class WorkerManager {
   private messageHandlers: ((event: MessageEvent) => void)[] = [];
   private workerJobs: Map<Worker, number> = new Map();
 
-  constructor(numWorkers: number = navigator.hardwareConcurrency || 4) {
+  constructor(numWorkers: number = navigator.hardwareConcurrency || 4, initMsg: WorkerMessageInit) {
     const numInstantWorkers = 2;
-    this.workers = this.init(numWorkers - numInstantWorkers);
-    this.instantWorkers = this.init(numInstantWorkers);
+    this.workers = this.init(numWorkers - numInstantWorkers, initMsg);
+    this.instantWorkers = this.init(numInstantWorkers, initMsg);
   }
 
-  private init(numWorkers: number = navigator.hardwareConcurrency || 4) {
+  private init(numWorkers: number = navigator.hardwareConcurrency || 4, initMsg: WorkerMessageInit) {
     const workers: Worker[] = [];
     for (let i = 0; i < numWorkers; i++) {
       try {
@@ -20,6 +22,7 @@ export class WorkerManager {
         worker.onerror = (error) => {
           console.error(`Worker ${i} error:`, error);
         };
+        worker.postMessage(initMsg);
         workers.push(worker);
       } catch (error) {
         console.error(`❌ Failed to create worker ${i}:`, error);
@@ -81,7 +84,7 @@ export class WorkerManager {
   private _onMessageHandler(event: MessageEvent) {
     // Call primary handler
     this.onMessageHandler?.(event);
-    
+
     // Call all additional handlers
     this.messageHandlers.forEach(handler => handler(event));
 

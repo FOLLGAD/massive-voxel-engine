@@ -23,7 +23,7 @@ import { KeyboardState } from "./keyboard";
 import { VoxelType } from "./common/voxel-types";
 import { WorkerManager } from "./worker-manager";
 import { createAABB } from "./aabb";
-import { ChunkStorage } from './chunk-storage';
+import { ChunkStorageBase, IdbChunkStorage, IdbWorldsStorage } from './chunk-storage';
 
 let debugMode = false;
 log("Main", "Main script loaded.");
@@ -43,7 +43,7 @@ const chunkDataCache = new Map<string, Uint8Array>(); // Simple cache for chunk 
 const playerState = new PlayerState();
 let renderer: Renderer;
 let chunksReceived = 0;
-let chunkStorage: ChunkStorage;
+let chunkStorage: ChunkStorageBase;
 
 // --- Camera/Input State ---
 let cameraYaw = Math.PI / 4;
@@ -128,9 +128,18 @@ async function main() {
   const numWorkers = navigator.hardwareConcurrency || 4;
   log("Main", `Initializing ${numWorkers} workers...`);
 
-  const workerManager = new WorkerManager(numWorkers);
-  chunkStorage = new ChunkStorage();
+  console.log("Loading worldsStorage...");
+  const worldsStorage = new IdbWorldsStorage();
+  console.log("Loading world...");
+  chunkStorage = await worldsStorage.createWorld("sleepyville", 321321312, "pebbletown2");
+
+  const { worldName, worldSeed } = await chunkStorage.ensureInitialized();
+
+  console.log("Ensuring initialized...");
   await chunkStorage.ensureInitialized();
+  console.log("Initialized");
+
+  const workerManager = new WorkerManager(numWorkers, { type: "init", worldName, worldSeed });
 
   // Function to request chunk data from workers when needed for physics
   const requestChunkData = async (posBatch: vec3[]) => {
@@ -189,7 +198,6 @@ async function main() {
   };
   workerManager.setMessageHandler(workerMessageHandler);
 
-  // Debug Info Element
   const debugInfoElement = document.getElementById(
     "debug-info"
   ) as HTMLDivElement;
@@ -305,10 +313,6 @@ async function main() {
     }
     if (keyboardState.pressedKeys.has("KeyV")) {
       debugMode = !debugMode;
-    }
-    if (keyboardState.pressedKeys.has("KeyF")) {
-      await chunkStorage.flushPendingSaves();
-      log("Main", "Requested manual flush of pending saves");
     }
 
     if (keyboardState.pressedKeys.has("KeyQ")) {
@@ -586,9 +590,6 @@ Pos:    (${playerState.position[0].toFixed(1)}, ${playerState.position[1].toFixe
 Chunk:  (${playerChunk[0]}, ${playerChunk[1]}, ${playerChunk[2]})
 Look:   (${lookDirection[0].toFixed(2)}, ${lookDirection[1].toFixed(2)}, ${lookDirection[2].toFixed(2)})
 Chunks: ${renderer.chunkManager.chunkGeometryInfo.size} (${requestedChunkKeys.size} req, ${chunkDataCache.size} cached)
-Drawn:  ${renderer.debugInfo.drawnChunks}
-Culled: ${renderer.debugInfo.culledChunks}
-Tris:   ${renderer.debugInfo.totalTriangles.toLocaleString()}
 FPS:    ${fps.toFixed(1)} (${avgDelta.toFixed(2)} ms)
 Physics:${physicsTimeMs.toFixed(2)} ms
 Render: ${renderTimeMs.toFixed(2)} ms

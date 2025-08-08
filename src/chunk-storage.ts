@@ -3,19 +3,109 @@ import { getChunkKey } from "./chunk";
 import { CHUNK_CONFIG } from "./config";
 import log from "./logger";
 
+interface WorldMetadata {
+    worldName: string;
+    worldSeed: number;
+}
+
 export interface ChunkStorageStats {
     totalChunks: number;
     totalSizeBytes: number;
     averageChunkSizeBytes: number;
 }
 
-export class ChunkStorage {
-    private db: IDBDatabase | null = null;
-    private readonly dbName = "VoxelEngineChunks";
-    private readonly storeName = "chunks";
+export abstract class WorldStorageBase {
+    abstract getWorlds(): Promise<string[]>;
+    abstract loadWorld(worldId: string): Promise<ChunkStorageBase>;
+    abstract createWorld(worldId: string, worldSeed: number, worldName: string): Promise<ChunkStorageBase>;
+}
+
+export class IdbWorldsStorage extends WorldStorageBase {
+    private readonly worldDbPrefix = "VoxelEngineWorld:";
     private readonly version = 1;
+
+    private openWorldDatabase(worldId: string, seedIfCreating?: number, worldName?: string): Promise<IDBDatabase> {
+        const dbName = `${this.worldDbPrefix}${worldId}`;
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(dbName, this.version);
+
+            request.onupgradeneeded = (event) => {
+                const db = request.result;
+                const existingStores = new Set(Array.from(db.objectStoreNames));
+                if (!existingStores.has("chunks")) {
+                    db.createObjectStore("chunks", { keyPath: "key" });
+                }
+                if (!existingStores.has("metadata")) {
+                    const metaStore = db.createObjectStore("metadata", { keyPath: "key" });
+                    // If we are explicitly creating a world, initialize metadata during upgrade
+                    if (typeof seedIfCreating === "number") {
+                        metaStore.put({ key: "world", worldSeed: seedIfCreating, worldName });
+                    }
+                }
+            };
+
+            request.onsuccess = () => {
+                resolve(request.result);
+            };
+            request.onerror = () => {
+                reject(request.error);
+            };
+        });
+    }
+
+    async getWorlds(): Promise<string[]> {
+        // Prefer native databases() enumeration if available
+        const anyIndexedDB = indexedDB as unknown as { databases?: () => Promise<Array<{ name?: string | null }>> };
+        if (typeof anyIndexedDB.databases === "function") {
+            try {
+                const dbs = await anyIndexedDB.databases!();
+                return dbs
+                    .map((d) => d.name || "")
+                    .filter((name) => name.startsWith(this.worldDbPrefix))
+                    .map((name) => name.substring(this.worldDbPrefix.length));
+            } catch (e) {
+                log.warn("WorldsStorage", "indexedDB.databases() failed; returning empty world list", e);
+                return [];
+            }
+        }
+        // Fallback: cannot enumerate reliably without a registry; return empty list
+        return [];
+    }
+
+    async loadWorld(worldId: string): Promise<ChunkStorageBase> {
+        const db = await this.openWorldDatabase(worldId);
+        const world = new IdbChunkStorage(db, "chunks", "metadata");
+        await world.ensureInitialized();
+        return world;
+    }
+
+    async createWorld(worldId: string, worldSeed: number, worldName: string): Promise<ChunkStorageBase> {
+        const db = await this.openWorldDatabase(worldId, worldSeed, worldName);
+        const world = new IdbChunkStorage(db, "chunks", "metadata");
+        await world.ensureInitialized();
+        return world;
+    }
+}
+
+export abstract class ChunkStorageBase {
+    abstract metadata: WorldMetadata | null;
+    abstract saveChunk(position: vec3, data: Uint8Array, immediate?: boolean): Promise<void>;
+    abstract loadChunk(position: vec3): Promise<Uint8Array | null>;
+    abstract deleteChunk(position: vec3): Promise<void>;
+    abstract hasChunk(position: vec3): Promise<boolean>;
+    abstract getStats(): Promise<ChunkStorageStats>;
+    abstract clearAll(): Promise<void>;
+    abstract getChunkKeys(): Promise<string[]>;
+    abstract saveChunks(chunks: Array<{ position: vec3; data: Uint8Array }>): Promise<void>;
+    abstract loadChunks(positions: vec3[]): Promise<Map<string, Uint8Array>>;
+
+    abstract ensureInitialized(): Promise<WorldMetadata>;
+    abstract flushPendingSaves(): Promise<void>;
+}
+
+export class IdbChunkStorage extends ChunkStorageBase {
     private isInitialized = false;
-    private initPromise: Promise<void> | null = null;
+    public metadata: WorldMetadata | null = null;
 
     // Batching mechanism for writes
     private pendingStorageSaves = new Map<string, { position: vec3; data: Uint8Array }>();
@@ -23,9 +113,9 @@ export class ChunkStorage {
     private readonly MAX_PENDING_SAVES = 100;
     private flushIntervalId: ReturnType<typeof setInterval> | null = null;
 
+    constructor(private db: IDBDatabase, private readonly chunkStoreName: string, private readonly metadataStoreName: string) {
+        super();
 
-    constructor() {
-        this.initDatabase();
         // The batching system should only run on the main thread's instance.
         if (typeof window !== 'undefined') {
             this.flushIntervalId = setInterval(() => this.flushPendingSaves(), this.STORAGE_BATCH_INTERVAL);
@@ -33,105 +123,30 @@ export class ChunkStorage {
         }
     }
 
-    private async initDatabase(): Promise<void> {
-        if (this.initPromise) {
-            return this.initPromise;
-        }
-
-        this.initPromise = new Promise((resolve, reject) => {
-            log("ChunkStorage", "Starting IndexedDB initialization...");
-
-            // Check if IndexedDB is available (works in both main thread and workers)
-            if (typeof indexedDB === 'undefined') {
-                log.error("ChunkStorage", "IndexedDB is not available in this environment");
-                reject(new Error("IndexedDB is not available in this environment"));
-                return;
-            }
-
-            // Add timeout to prevent hanging
-            const timeout = setTimeout(() => {
-                log.error("ChunkStorage", "IndexedDB initialization timed out after 10 seconds - continuing without storage");
-                // Don't reject, just continue without storage
-                this.isInitialized = true;
-                this.db = null;
-                clearTimeout(timeout);
-                resolve();
-            }, 5000); // Reduced timeout
-
-            const attemptInit = () => {
-                log("ChunkStorage", `Opening IndexedDB: ${this.dbName} v${this.version}`);
-                const request = indexedDB.open(this.dbName, this.version);
-
-                request.onerror = () => {
-                    clearTimeout(timeout);
-                    const error = request.error;
-                    log.error("ChunkStorage", "Failed to open IndexedDB:", error);
-
-                    // Try to delete and recreate the database if it's corrupted
-                    if (error && error.name === 'UnknownError') {
-                        log("ChunkStorage", "Attempting to delete corrupted database...");
-                        const deleteRequest = indexedDB.deleteDatabase(this.dbName);
-
-                        deleteRequest.onsuccess = () => {
-                            log("ChunkStorage", "Database deleted, retrying initialization...");
-                            setTimeout(() => {
-                                attemptInit(); // Retry initialization
-                            }, 100);
-                        };
-
-                        deleteRequest.onerror = () => {
-                            log.error("ChunkStorage", "Failed to delete corrupted database:", deleteRequest.error);
-                            reject(error);
-                        };
-                    } else {
-                        reject(error);
-                    }
-                };
-
-                request.onsuccess = () => {
-                    clearTimeout(timeout);
-                    this.db = request.result;
-                    this.isInitialized = true;
-                    log("ChunkStorage", "IndexedDB initialized successfully");
-                    resolve();
-                };
-
-                request.onupgradeneeded = (event) => {
-                    log("ChunkStorage", "IndexedDB upgrade needed, creating object store...");
-                    const db = (event.target as IDBOpenDBRequest).result;
-
-                    // Create object store if it doesn't exist
-                    if (!db.objectStoreNames.contains(this.storeName)) {
-                        const store = db.createObjectStore(this.storeName, { keyPath: "key" });
-                        store.createIndex("key", "key", { unique: true });
-                        log("ChunkStorage", "Created chunk object store");
-                    }
-                };
-
-                request.onblocked = () => {
-                    log.error("ChunkStorage", "IndexedDB blocked - another connection is open");
-                    reject(new Error("IndexedDB blocked - another connection is open"));
-                };
+    private async initMetadata(): Promise<WorldMetadata> {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.metadataStoreName], "readonly");
+            const store = transaction.objectStore(this.metadataStoreName);
+            const request = store.get("world");
+            request.onsuccess = () => {
+                const metadata = request.result as WorldMetadata;
+                this.metadata = metadata;
+                resolve(metadata);
             };
-
-            // Start the initialization attempt
-            attemptInit();
+            request.onerror = () => {
+                log.error("ChunkStorage", "Failed to load metadata:", request.error);
+                reject(new Error("Failed to load metadata"));
+            };
         });
-
-        return this.initPromise;
     }
 
-    async ensureInitialized(): Promise<void> {
+    async ensureInitialized(): Promise<WorldMetadata> {
         if (!this.isInitialized) {
-            try {
-                await this.initDatabase();
-            } catch (error) {
-                log.error("ChunkStorage", "Failed to initialize IndexedDB, storage will be disabled:", error);
-                // Mark as initialized but with no database
-                this.isInitialized = true;
-                this.db = null;
-            }
+            const metadata = await this.initMetadata();
+            this.isInitialized = true;
+            return metadata;
         }
+        return this.metadata!;
     }
 
     public async flushPendingSaves(): Promise<void> {
@@ -177,8 +192,8 @@ export class ChunkStorage {
 
         return new Promise((resolve, reject) => {
             const t = performance.now();
-            const transaction = this.db!.transaction([this.storeName], "readonly");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readonly");
+            const store = transaction.objectStore(this.chunkStoreName);
 
             const chunkKey = getChunkKey(position);
             const request = store.get(chunkKey);
@@ -210,8 +225,8 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readwrite");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readwrite");
+            const store = transaction.objectStore(this.chunkStoreName);
 
             const chunkKey = getChunkKey(position);
             const request = store.delete(chunkKey);
@@ -236,8 +251,8 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readonly");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readonly");
+            const store = transaction.objectStore(this.chunkStoreName);
 
             const chunkKey = getChunkKey(position);
             const request = store.count(chunkKey);
@@ -268,8 +283,8 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readonly");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readonly");
+            const store = transaction.objectStore(this.chunkStoreName);
 
             // Use count() instead of getAll() for much better performance
             const request = store.count();
@@ -305,8 +320,8 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readwrite");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readwrite");
+            const store = transaction.objectStore(this.chunkStoreName);
 
             const request = store.clear();
 
@@ -330,8 +345,8 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readonly");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readonly");
+            const store = transaction.objectStore(this.chunkStoreName);
 
             const request = store.getAllKeys();
 
@@ -356,22 +371,21 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readwrite");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readwrite");
+            const store = transaction.objectStore(this.chunkStoreName);
 
-            let completed = 0;
             let hasError = false;
 
             transaction.oncomplete = () => {
-                if(hasError) {
+                if (hasError) {
                     reject(new Error("Some chunks failed to save in batch"));
                 } else {
                     resolve();
                 }
-            }
+            };
             transaction.onerror = () => {
                 reject(transaction.error);
-            }
+            };
 
             chunks.forEach(({ position, data }) => {
                 const chunkKey = getChunkKey(position);
@@ -400,16 +414,16 @@ export class ChunkStorage {
         }
 
         return new Promise((resolve, reject) => {
-            const transaction = this.db!.transaction([this.storeName], "readonly");
-            const store = transaction.objectStore(this.storeName);
+            const transaction = this.db.transaction([this.chunkStoreName], "readonly");
+            const store = transaction.objectStore(this.chunkStoreName);
             const results = new Map<string, Uint8Array>();
 
             transaction.oncomplete = () => {
                 resolve(results);
-            }
+            };
             transaction.onerror = () => {
                 reject(transaction.error);
-            }
+            };
 
             positions.forEach(position => {
                 const chunkKey = getChunkKey(position);
@@ -421,8 +435,8 @@ export class ChunkStorage {
                     }
                 };
                 request.onerror = () => {
-                     log.error("ChunkStorage", `Failed to load chunk ${chunkKey} in batch:`, request.error);
-                }
+                    log.error("ChunkStorage", `Failed to load chunk ${chunkKey} in batch:`, request.error);
+                };
             });
         });
     }

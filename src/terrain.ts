@@ -2,16 +2,13 @@ import { vec3 } from "gl-matrix";
 import { Chunk } from "./chunk";
 import { CHUNK_CONFIG } from "./config";
 import { VoxelType } from "./common/voxel-types";
-import log from "./logger";
 import { mkSimplexNoise, mulberry32, type SimplexNoise } from "./noise";
-
-const seedFn = mulberry32(345);
 
 export class Terrain {
   private noise: SimplexNoise;
 
-  constructor() {
-    this.noise = mkSimplexNoise(seedFn);
+  constructor(private readonly worldSeed: number) {
+    this.noise = mkSimplexNoise(mulberry32(worldSeed));
   }
 
   epicCaves(worldX: number, worldY: number, worldZ: number) {
