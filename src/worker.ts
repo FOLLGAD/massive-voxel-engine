@@ -124,12 +124,10 @@ self.onmessage = async (event: MessageEvent) => {
       }
     }
 
-    if (chunksToUnload.length > 0) {
-      self.postMessage({
-        type: "chunksToUnload",
-        chunks: chunksToUnload,
-      });
-    }
+    self.postMessage({
+      type: "chunksToUnload",
+      chunks: chunksToUnload,
+    });
 
   } else {
     log.warn("Worker", `Unknown message type received: ${type}`);
