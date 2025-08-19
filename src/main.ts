@@ -623,6 +623,19 @@ async function main() {
       const playerChunk = getChunkOfPosition(playerState.position);
       const lookDirection = vec3.fromValues(Math.cos(cameraPitch) * Math.sin(cameraYaw), Math.sin(cameraPitch), Math.cos(cameraPitch) * Math.cos(cameraYaw));
 
+      const taskSnapshot = workerManager.getTaskSnapshot(10);
+      const formatPos = (p: unknown) => {
+        try {
+          const pos = p as any;
+          if (pos && typeof pos[0] === 'number' && typeof pos[1] === 'number' && typeof pos[2] === 'number') {
+            return `(${pos[0]},${pos[1]},${pos[2]})`;
+          }
+        } catch {}
+        return '';
+      };
+      const activeLines = taskSnapshot.active.map(t => `#${t.id} ${t.type} ${formatPos(t.position)} ${Math.round(t.ageMs)}ms`);
+      const queuedLines = taskSnapshot.queued.map(t => `#${t.id} ${t.type} ${formatPos(t.position)} ${Math.round(t.ageMs)}ms`);
+
       debugInfoElement.textContent = `
 Pos:    (${playerState.position[0].toFixed(1)}, ${playerState.position[1].toFixed(1)}, ${playerState.position[2].toFixed(1)})
 Chunk:  (${playerChunk[0]}, ${playerChunk[1]}, ${playerChunk[2]})
@@ -635,6 +648,9 @@ LookAt: ${lookAtTimeMs.toFixed(2)} ms
 Mesh:   ${ENABLE_GREEDY_MESHING ? "Greedy" : "Naive"}
 Gnd:    ${playerState.isGrounded} VelY: ${playerState.velocity[1].toFixed(2)}
 Chunks: ${CHUNK_CONFIG.loadRadius.xz}x${CHUNK_CONFIG.loadRadius.y}
+Tasks:  Active ${taskSnapshot.active.length}, Queued ${taskSnapshot.queued.length}
+Active:\n${activeLines.join('\n')}
+Queued (max 10):\n${queuedLines.join('\n')}
       `.trim();
     }
   }
