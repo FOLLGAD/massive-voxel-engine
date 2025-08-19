@@ -17,8 +17,14 @@ self.onmessage = async (event: MessageEvent) => {
   if (type === "init") {
     const { worldName, worldSeed } = event.data;
     terrain = new Terrain(worldSeed);
-  } else if (type === "requestChunk") {
-    const { position, data: existingData } = event.data;
+    return
+  } else if (terrain === null) {
+    log.error("Worker", "Terrain not initialized");
+    throw new Error("Terrain not initialized");
+  }
+
+  if (type === "requestChunk") {
+    const { position, data: existingData, epoch } = event.data as { position: vec3; data?: ArrayBuffer | null; epoch?: number };
 
     let chunk;
     if (existingData) {
@@ -29,7 +35,8 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({
         type: "chunkGenerated",
         position: position,
-        voxels: dataForStorage
+        voxels: dataForStorage,
+        epoch
       }, [dataForStorage as ArrayBuffer]);
     }
 
@@ -40,15 +47,17 @@ self.onmessage = async (event: MessageEvent) => {
       vertices: mesh.vertices.buffer,
       indices: mesh.indices.buffer,
       visibilityBits: chunk.generateVisibilityMatrix(),
+      epoch
     }, [mesh.vertices.buffer as ArrayBuffer, mesh.indices.buffer as ArrayBuffer]);
 
   } else if (type === "requestChunkData") {
-    const { position, data: existingData } = event.data;
+    const { position, data: existingData, epoch } = event.data as { position: vec3; data?: ArrayBuffer | null; epoch?: number };
     if (existingData) {
       self.postMessage({
         type: "chunkDataAvailable",
         position,
         voxels: existingData,
+        epoch
       }, [existingData as ArrayBuffer]);
     } else {
       const chunk = terrain.generateTerrain(position);
@@ -57,17 +66,19 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({
         type: "chunkGenerated",
         position: position,
-        voxels: dataForStorage
+        voxels: dataForStorage,
+        epoch
       }, [dataForStorage as ArrayBuffer]);
       self.postMessage({
         type: "chunkDataAvailable",
         position,
         voxels: dataForCache,
+        epoch
       }, [dataForCache as ArrayBuffer]);
     }
 
   } else if (type === "renderChunk") {
-    const { position, data } = event.data;
+    const { position, data, epoch } = event.data as { position: vec3; data: ArrayBuffer; epoch?: number };
     const chunkData = new Uint8Array(data);
 
     const chunk = new Chunk(position, chunkData);
@@ -84,6 +95,7 @@ self.onmessage = async (event: MessageEvent) => {
       vertices: mesh.vertices.buffer,
       indices: mesh.indices.buffer,
       visibilityBits: chunk.generateVisibilityMatrix(),
+      epoch
     }, [mesh.vertices.buffer as ArrayBuffer, mesh.indices.buffer as ArrayBuffer]);
 
   } else if (type === "deleteChunk") {

@@ -160,13 +160,22 @@ async function main() {
   };
 
   let chunksToUnloadQueue: string[] = [];
+  let currentEpoch = 0;
+  let inFlightChunkKeys = new Set<string>();
 
   // --- Worker Message Handling ---
   const workerMessageHandler = (event: MessageEvent) => {
     const { type, ...data } = event.data;
 
     if (type === "chunkMeshUpdated") {
-      const { position, vertices, indices, visibilityBits } = data;
+      const { position, vertices, indices, visibilityBits, epoch } = data as { position: vec3; vertices: ArrayBuffer; indices: ArrayBuffer; visibilityBits: number; epoch?: number };
+      // Always clear in-flight state for this key, even if stale
+      const key = getChunkKey(position);
+      inFlightChunkKeys.delete(key);
+      if (typeof epoch === 'number' && epoch < currentEpoch) {
+        // Stale result; ignore applying to renderer
+        return;
+      }
       const aabb = createAABB(
         vec3.fromValues(position[0] * CHUNK_CONFIG.size.x, position[1] * CHUNK_CONFIG.size.y, position[2] * CHUNK_CONFIG.size.z),
         vec3.fromValues((position[0] + 1) * CHUNK_CONFIG.size.x, (position[1] + 1) * CHUNK_CONFIG.size.y, (position[2] + 1) * CHUNK_CONFIG.size.z)
@@ -180,14 +189,22 @@ async function main() {
         aabb,
         visibilityBits
       );
+      // Mark as completed (already removed above)
     } else if (type === "chunkDataAvailable") {
-      const { position, voxels } = data;
+      const { position, voxels, epoch } = data as { position: vec3; voxels: ArrayBuffer; epoch?: number };
+      if (typeof epoch === 'number' && epoch < currentEpoch) {
+        return;
+      }
       const key = getChunkKey(position);
       const voxelData = new Uint8Array(voxels);
       chunkDataCache.set(key, voxelData);
       chunksReceived++;
     } else if (type === "chunkGenerated") {
-      chunkStorage.saveChunk(data.position, new Uint8Array(data.voxels));
+      const { position, voxels, epoch } = data as { position: vec3; voxels: ArrayBuffer; epoch?: number };
+      if (typeof epoch === 'number' && epoch < currentEpoch) {
+        return;
+      }
+      chunkStorage.saveChunk(position, new Uint8Array(voxels));
     } else if (type === "chunkNeedsDeletion") {
       chunkStorage.deleteChunk(data.position);
     } else if (type === "chunksToUnload") {
@@ -359,6 +376,7 @@ async function main() {
             type: "renderChunk",
             position: chunk.position,
             data: workerData.buffer,
+            epoch: currentEpoch,
           },
           [workerData.buffer],
           true
@@ -386,6 +404,7 @@ async function main() {
             type: "renderChunk",
             position: chunk.position,
             data: workerData.buffer,
+            epoch: currentEpoch,
           },
           [workerData.buffer],
           true
@@ -420,9 +439,8 @@ async function main() {
         }, undefined, true);
       }
 
-      for (const chunkKey of allChunkKeys) {
-        const [x, y, z] = chunkKey.split(',').map(Number);
-        const chunkPos = vec3.fromValues(x, y, z);
+      for (const [chunkKey, chunkInfo] of renderer.chunkManager.chunkGeometryInfo.entries()) {
+        const chunkPos = chunkInfo.position;
 
         const dx = Math.abs(chunkPos[0] - playerChunk[0]);
         const dy = Math.abs(chunkPos[1] - playerChunk[1]);
@@ -465,73 +483,93 @@ async function main() {
 
   let lastHandledChunkPosition: vec3 | null = null;
   const loadChunksNearby = async () => {
-    const currentChunk = getChunkOfPosition(playerState.position);
-    if (!lastHandledChunkPosition || !vec3.equals(lastHandledChunkPosition, currentChunk)) {
-      lastHandledChunkPosition = vec3.clone(currentChunk);
+    const playerChunk = getChunkOfPosition(playerState.position);
+    // Increment epoch when entering a new player chunk
+    if (!lastHandledChunkPosition || !vec3.equals(lastHandledChunkPosition, playerChunk)) {
+      lastHandledChunkPosition = vec3.clone(playerChunk);
+      currentEpoch += 1;
+    }
 
-      const positionsToLoad: vec3[] = [];
-      // Collect all possible chunk positions with their distance to center, then sort by distance (onion order)
-      const offsets: { x: number, y: number, z: number, dist: number }[] = [];
-      for (let yOffset = -CHUNK_CONFIG.loadRadius.y; yOffset <= CHUNK_CONFIG.loadRadius.y; yOffset++) {
-        for (let zOffset = -CHUNK_CONFIG.loadRadius.xz; zOffset <= CHUNK_CONFIG.loadRadius.xz; zOffset++) {
-          for (let xOffset = -CHUNK_CONFIG.loadRadius.xz; xOffset <= CHUNK_CONFIG.loadRadius.xz; xOffset++) {
-            const dist = Math.abs(xOffset) + Math.abs(yOffset) + Math.abs(zOffset);
-            offsets.push({ x: xOffset, y: yOffset, z: zOffset, dist });
-          }
-        }
-      }
-      // Sort by distance to center (onion layers)
-      offsets.sort((a, b) => a.dist - b.dist);
-
-      for (const { x: xOffset, y: yOffset, z: zOffset } of offsets) {
-        const chunkPos = vec3.fromValues(
-          currentChunk[0] + xOffset,
-          currentChunk[1] + yOffset,
-          currentChunk[2] + zOffset
-        );
-        const key = getChunkKey(chunkPos);
-        if (!requestedChunkKeys.has(key)) {
-          requestedChunkKeys.add(key);
-          positionsToLoad.push(chunkPos);
-        }
-      }
-
-      if (positionsToLoad.length > 0) {
-        log("Main", `Requesting ${positionsToLoad.length} new chunks.`);
-
-        // Helper to chunk an array into batches of size batchSize
-        function chunkArray<T>(arr: T[], batchSize: number): T[][] {
-          const result: T[][] = [];
-          for (let i = 0; i < arr.length; i += batchSize) {
-            result.push(arr.slice(i, i + batchSize));
-          }
-          return result;
-        }
-
-        // We'll process in 100x100 = 10,000 chunk batches
-        const BATCH_SIZE = 100 * 100;
-        const batches = chunkArray(positionsToLoad, BATCH_SIZE);
-
-        // Process each batch sequentially, but inside each batch, queue all at once
-        for (const batch of batches) {
-          // Await loading all chunks in this batch
-          const storedChunks = await chunkStorage.loadChunks(batch);
-
-          for (const chunkPos of batch) {
-            const key = getChunkKey(chunkPos);
-            const storedData = storedChunks.get(key);
-
-            workerManager.queueTask({
-              type: "requestChunk",
-              position: chunkPos,
-              data: storedData ? storedData.buffer : null,
-            }, storedData ? [storedData.buffer] : []);
-          }
+    // Build candidate chunk positions within radius
+    const candidatePositions: vec3[] = [];
+    for (let yOffset = -CHUNK_CONFIG.loadRadius.y; yOffset <= CHUNK_CONFIG.loadRadius.y; yOffset++) {
+      for (let zOffset = -CHUNK_CONFIG.loadRadius.xz; zOffset <= CHUNK_CONFIG.loadRadius.xz; zOffset++) {
+        for (let xOffset = -CHUNK_CONFIG.loadRadius.xz; xOffset <= CHUNK_CONFIG.loadRadius.xz; xOffset++) {
+          const pos = vec3.fromValues(
+            playerChunk[0] + xOffset,
+            playerChunk[1] + yOffset,
+            playerChunk[2] + zOffset
+          );
+          candidatePositions.push(pos);
         }
       }
     }
 
-    setTimeout(() => requestIdleCallback(loadChunksNearby, { timeout: 500 }), 500);
+    // Compute priority scores (distance + view bias)
+    const camPos = playerState.getCameraPosition();
+    const lookDirection = vec3.fromValues(
+      Math.cos(cameraPitch) * Math.sin(cameraYaw),
+      Math.sin(cameraPitch),
+      Math.cos(cameraPitch) * Math.cos(cameraYaw)
+    );
+    vec3.normalize(lookDirection, lookDirection);
+
+    const scored: Array<{ position: vec3; score: number; key: string }> = [];
+    for (const pos of candidatePositions) {
+      const key = getChunkKey(pos);
+      // Skip if already rendered or currently in flight
+      if (renderer.chunkManager.chunkGeometryInfo.has(key)) continue;
+      if (inFlightChunkKeys.has(key)) continue;
+
+      const dx = pos[0] - playerChunk[0];
+      const dy = pos[1] - playerChunk[1];
+      const dz = pos[2] - playerChunk[2];
+      const manhattan = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+
+      // View direction bias using vector from camera to chunk center
+      const chunkWorldCenter = vec3.fromValues(
+        (pos[0] + 0.5) * CHUNK_CONFIG.size.x,
+        (pos[1] + 0.5) * CHUNK_CONFIG.size.y,
+        (pos[2] + 0.5) * CHUNK_CONFIG.size.z,
+      );
+      const toChunk = vec3.subtract(vec3.create(), chunkWorldCenter, camPos);
+      vec3.normalize(toChunk, toChunk);
+      const facing = Math.max(0, vec3.dot(lookDirection, toChunk)); // 0..1
+      const viewPenalty = 1 - facing; // 0 if directly facing
+
+      const verticalPenalty = Math.abs(dy) * 0.2;
+
+      const score = manhattan + viewPenalty * 2 + verticalPenalty;
+      scored.push({ position: pos, score, key });
+    }
+
+    // Sort by score ascending
+    scored.sort((a, b) => a.score - b.score);
+
+    // Select a budget to schedule this tick
+    const BUDGET = Math.max(8, (navigator.hardwareConcurrency || 4) * 8);
+    const toSchedule = scored.slice(0, BUDGET).map(s => s.position);
+
+    if (toSchedule.length > 0) {
+      // Load any stored voxel data for these
+      const storedChunks = await chunkStorage.loadChunks(toSchedule);
+
+      for (const pos of toSchedule) {
+        const key = getChunkKey(pos);
+        if (inFlightChunkKeys.has(key)) continue;
+        const storedData = storedChunks.get(key);
+        inFlightChunkKeys.add(key);
+        requestedChunkKeys.add(key);
+        workerManager.queueTask({
+          type: "requestChunk",
+          position: pos,
+          data: storedData ? storedData.buffer : null,
+          epoch: currentEpoch,
+        }, storedData ? [storedData.buffer] : []);
+      }
+    }
+
+    setTimeout(() => requestIdleCallback(loadChunksNearby, { timeout: 200 }), 200);
   };
 
   loadChunksNearby();
